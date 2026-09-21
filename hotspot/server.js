@@ -43,7 +43,7 @@ app.use(cors({
 }));
 
 const PORT = process.env.PORT || 3000;
-const BACKEND_VERSION = 'classic-routeros-api-2026-09-18-empty-reply-fix';
+const BACKEND_VERSION = 'classic-routeros-api-2026-09-21-delete-fix';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
@@ -624,8 +624,11 @@ async function deleteMikroTikUser(username) {
                 }
             }
             for (const entry of entries) {
-                if (String(entry[field] || '').trim() === value && entry['.id']) {
-                    await api.write(`${menu}/remove`, [`=.id=${entry['.id']}`]);
+                if (String(entry[field] || '').trim() === value) {
+                    if (!entry['.id']) {
+                        throw new Error(`MikroTik did not return an ID for ${menu} entry ${value}.`);
+                    }
+                    await api.write(`${menu}/remove`, [`=numbers=${entry['.id']}`]);
                 }
             }
         }

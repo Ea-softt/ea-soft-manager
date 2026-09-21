@@ -37,9 +37,9 @@ Only the Paystack PUBLIC key belongs in login.html.
 The backend includes compatibility handling for RouterOS 7.18+ `!empty` API
 replies. When updating an existing server, upload the latest `server.js` and
 restart the backend process. `/api/health` reports the deployed version;
-`classic-routeros-api-2026-09-18-empty-reply-fix` includes this fix. If deletion
-still fails after updating, inspect backend logs for connection or permission
-errors. Manager records are retained when router deletion fails.
+`classic-routeros-api-2026-09-21-delete-fix` includes the RouterOS deletion fix.
+If deletion still fails after updating, inspect backend logs for connection or
+permission errors. Manager records are retained when router deletion fails.
 
 1. Install Node.js 18+.
 2. Run:
