@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="pragma" content="no-cache" />
+    <meta http-equiv="expires" content="-1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Internet hotspot - Log in</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .packages-section {
+            margin-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.2);
+            padding-top: 15px;
+        }
+        .package-card {
+            position: relative;
+            overflow: hidden;
+            background: linear-gradient(105deg, rgba(255,255,255,.2), rgba(255,255,255,.08));
+            border: 1px solid rgba(255,255,255,.42);
+            border-left: 5px solid #43f58a;
+            border-radius: 14px;
+            padding: 15px 14px 15px 16px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 8px 18px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.2);
+            transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+        }
+        .package-card:hover {
+            transform: translateY(-2px);
+            border-color: #fff;
+            box-shadow: 0 12px 24px rgba(0,0,0,.28), 0 0 16px rgba(67,245,138,.2);
+        }
+        .package-card:nth-of-type(3) { border-left-color: #ffe066; }
+        .package-card:nth-of-type(4) { border-left-color: #62d9ff; }
+        .package-card:nth-of-type(5) { border-left-color: #ff9f68; }
+        .package-card:nth-of-type(6) { border-left-color: #d49aff; }
+        .package-card:nth-of-type(7) { border-left-color: #43f58a; }
+        .package-card:after {
+            content: "";
+            position: absolute;
+            right: -28px;
+            top: -28px;
+            width: 90px;
+            height: 90px;
+            border-radius: 50%;
+            background: rgba(255,255,255,.08);
+            pointer-events: none;
+        }
+        .package-info h4 {
+            margin: 0;
+            color: #fff;
+            font-size: 16px;
+        }
+        .package-info p {
+            margin: 3px 0 0;
+            color: #d8ffe7;
+            font-size: 12px;
+        }
+        .package-price {
+            color: #ffe066;
+            font-weight: bold;
+            font-size: 15px;
+            margin-bottom: 5px;
+        }
+        .buy-btn {
+            position: relative;
+            z-index: 1;
+            background: linear-gradient(135deg, #43f58a, #11b968);
+            color: #063d31;
+            border: 1px solid rgba(255,255,255,.7);
+            padding: 8px 18px;
+            border-radius: 999px;
+            cursor: pointer;
+            font-weight: bold;
+            letter-spacing: .5px;
+            box-shadow: 0 4px 10px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.55);
+            transition: transform .2s ease, box-shadow .2s ease, filter .2s ease;
+        }
+        .buy-btn:before {
+            content: "✓";
+            margin-right: 5px;
+            font-size: 12px;
+        }
+        .buy-btn:hover, .buy-btn:focus {
+            transform: translateY(-1px) scale(1.03);
+            filter: brightness(1.1);
+            box-shadow: 0 7px 14px rgba(0,0,0,.3), 0 0 12px rgba(67,245,138,.4);
+            outline: none;
+        }
+        .buy-btn:active {
+            transform: translateY(1px) scale(.98);
+        }
+        .momo-input-group {
+            position: relative;
+            padding: 2px;
+            margin-bottom: 15px;
+            border-radius: 10px;
+            background: linear-gradient(90deg, #43f58a, #62d9ff, #ffe066, #ff9f68, #43f58a);
+            background-size: 300% 100%;
+            animation: momoEdgeFlow 4s linear infinite;
+            box-shadow: 0 0 14px rgba(67,245,138,.22);
+        }
+        .momo-input-group:focus-within {
+            box-shadow: 0 0 0 3px rgba(67,245,138,.18), 0 0 20px rgba(98,217,255,.32);
+        }
+        .momo-input-group input#momo_phone {
+            position: relative;
+            display: block;
+            width: 100%;
+            margin: 0 !important;
+            border: 0 !important;
+            border-radius: 8px !important;
+            background: #063d31 !important;
+            color: #fff !important;
+        }
+        .momo-input-group input#momo_phone:focus {
+            outline: none;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,.35) !important;
+        }
+        .momo-input-group input#momo_phone::placeholder {
+            color: rgba(255,255,255,.75);
+        }
+        @keyframes momoEdgeFlow {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 300% 50%; }
+        }
+        form[name="login"] > label {
+            margin-bottom: 14px;
+        }
+        form[name="login"] > label .ico {
+            z-index: 1;
+            top: 50%;
+            left: 14px;
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            transform: translateY(-50%);
+            filter: brightness(0) saturate(100%) invert(37%) sepia(85%) saturate(530%) hue-rotate(112deg) brightness(101%);
+        }
+        form[name="login"] > label input[type="text"],
+        form[name="login"] > label input[type="password"] {
+            height: 50px;
+            padding: 3px 18px 3px 48px;
+            margin: 0;
+            border: 1px solid rgba(216,255,231,.55);
+            border-radius: 12px;
+            background: rgba(3,48,38,.58);
+            color: #fff;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 6px 14px rgba(0,0,0,.12);
+            transition: border-color .2s ease, box-shadow .2s ease, background .2s ease;
+        }
+        form[name="login"] > label input[type="text"]::placeholder,
+        form[name="login"] > label input[type="password"]::placeholder {
+            color: rgba(255,255,255,.72);
+        }
+        form[name="login"] > label input[type="text"]:focus,
+        form[name="login"] > label input[type="password"]:focus {
+            border-color: #43f58a;
+            background: rgba(3,48,38,.82);
+            box-shadow: 0 0 0 3px rgba(67,245,138,.2), 0 8px 18px rgba(0,0,0,.2);
+        }
+        form[name="login"] > input[type="submit"] {
+            height: 50px;
+            margin-top: 3px;
+            border: 1px solid rgba(255,255,255,.72);
+            border-radius: 12px;
+            background: linear-gradient(135deg, #43f58a 0%, #11b968 100%);
+            color: #063d31;
+            font-size: 16px;
+            font-weight: 800;
+            letter-spacing: .8px;
+            box-shadow: 0 8px 18px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.65);
+            transition: transform .2s ease, filter .2s ease, box-shadow .2s ease;
+        }
+        form[name="login"] > input[type="submit"]:hover,
+        form[name="login"] > input[type="submit"]:focus {
+            background: linear-gradient(135deg, #d8ffe7 0%, #43f58a 100%);
+            filter: brightness(1.05);
+            transform: translateY(-2px);
+            box-shadow: 0 11px 22px rgba(0,0,0,.3), 0 0 16px rgba(67,245,138,.35);
+            outline: none;
+        }
+        form[name="login"] > input[type="submit"]:active {
+            transform: translateY(1px);
+        }
+    </style>
+</head>
+
+<body>
+
+    $(if chap-id)
+    <form name="sendin" action="$(link-login-only)" method="post" style="display:none">
+        <input type="hidden" name="username" />
+        <input type="hidden" name="password" />
+        <input type="hidden" name="dst" value="$(link-orig)" />
+        <input type="hidden" name="popup" value="true" />
+    </form>
+
+    <script src="/md5.js"></script>
+    <script>
+        function doLogin() {
+            document.sendin.username.value = document.login.username.value;
+            document.sendin.password.value = hexMD5('$(chap-id)' + document.login.password.value + '$(chap-challenge)');
+            document.sendin.submit();
+            return false;
+        }
+    </script>
+    $(endif)
+
+    <div class="ie-fixMinHeight">
+        <div class="main">
+            <div class="wrap animated fadeIn">
+                <form name="login" action="$(link-orig)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
+                    <input type="hidden" name="dst" value="$(link-orig)" />
+                    <input type="hidden" name="popup" value="true" />
+                    
+                    <header class="ea-brand" aria-label="EA-Soft Wi-Fi Login Portal">
+                        <div class="ea-brand-name">EA-S<span class="ea-wifi" aria-hidden="true"><span class="ea-wifi-dot"></span></span>ft</div>
+                        <p class="ea-brand-tagline">HIGH SPEED INTERNET</p>
+                        <p class="ea-brand-portal">Wi-Fi Login Portal</p>
+                        <p class="ea-brand-motto">Fast, reliable internet access (Dagomba)</p>
+                    </header>
+                    <svg class="logo" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 174 42">
+                        <path fill="#fff" d="M7.32 13.66L0 41.74 3.12 41.74 9.49 15.94 9.58 15.94 15.01 41.74 18.22 41.74 36.86 16.34 36.95 16.34 30.02 41.74 33.18 41.74 40.4 13.66 35.73 13.66 17.23 38.87 11.99 13.66 7.32 13.66zM43.43 21.45L38.19 41.74 41.16 41.74 46.4 21.45 43.43 21.45zM50.68 21.45L45.5 41.74 48.47 41.74 50.36 34.39 55.55 30.77 62.02 41.74 65.27 41.74 57.91 29.28 69.43 21.45 65.46 21.45 51.21 31.36 51.12 31.28 53.66 21.45 50.68 21.45z" />
+                        <path d="M71.18 21.45L65.94 41.74h3l2.74-10.62c1-3.81 3.82-7.39 9.16-7.47.56 0 1.13 0 1.7 0l.66-2.48c-.52 0-1.09 0-1.61 0-4.34 0-6.94 2-8.82 5h-.1l1.23-4.68zM103.8 28.8c0-5-4-7.94-9.63-7.94-8.69 0-13.59 6.37-13.59 13 0 5.07 3.44 8.45 9.72 8.45 9 0 13.5-6.68 13.5-13.53m-3 .52c0 4.72-3.44 10.93-9.95 10.93-5 0-7.32-2.68-7.32-6.61 0-4.76 3.59-10.7 10.1-10.7 4.77 0 7.17 2.6 7.17 6.38M132.33 21.43L134.26 13.66 105.19 13.66 103.27 21.45 112.59 21.45 112.59 21.45 122.99 21.45 122.99 21.45 132.33 21.43zM111.67 25.17L107.55 41.74 117.93 41.74 122.06 25.17 122.06 25.16 111.67 25.16 111.67 25.17zM134 25.17l-4.11 16.57h9.35l4.1-16.57zm10.28-3.73l1.94-7.78h-9.34l-2 7.79zM150.09 13.66L143.11 41.74 152.45 41.74 153.91 35.92 156.04 34.34 159.34 41.74 169.49 41.74 163.26 29.55 174.26 21.33 163.07 21.33 156.18 27.3 156.09 27.3 159.44 13.66 150.09 13.66zM47.45 0c1.14 7.93 5.39 12.74 14.07 13.14A10.69 10.69 0 0 1 47.45 0" fill="#fff" fill-rule="evenodd" />
+                        <path d="M42.91,1.4c.1,0,.11,0,.12.11A16.55,16.55,0,0,0,48.26,13a16.6,16.6,0,0,0,12,4.66c-10,4-20.55-5.6-17.33-16.28" fill="#fff" fill-rule="evenodd" />
+                    </svg>
+
+                    <p class="info $(if error)alert$(endif)">
+                        $(if error == "")Please log in to use the internet hotspot service$(endif)
+                        $(if error)$(error)$(endif)
+                    </p>
+
+                    <label>
+                        <img class="ico" src="img/user.svg" alt="#" />
+                        <input name="username" id="username" type="text" value="$(username)" placeholder="Username" />
+                    </label>
+
+                    <label>
+                        <img class="ico" src="img/password.svg" alt="#" />
+                        <input name="password" id="password" type="password" placeholder="Password" />
+                    </label>
+
+                    <input type="submit" value="Login" />
+                </form>
+
+                <!-- Buy Package & MoMo Section -->
+                <div class="packages-section">
+                    <p class="plan-heading">Choose your internet plan</p>
+                    <p class="plan-subtitle">Pay Securely with mobile money</p>
+                    
+                    <div class="momo-input-group">
+                        <input type="text" id="momo_phone" placeholder="MoMo number (e.g. 0241234567)" style="width:100%; padding:10px; border-radius:6px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.2); color:#fff; margin-top:5px;" />
+                    </div>
+
+                    <div id="package-list"></div>
+                </div>
+
+                <p class="help-line">Any help? WhatsApp or Call <strong>0541021978</strong></p>
+                <p class="info bt">Powered by EA-Soft</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Paystack Inline JS V2 -->
+    <script src="https://js.paystack.co/v2/inline.js"></script>
+    <script>
+        /*
+         * IMPORTANT:
+         * 1. Keep ONLY your Paystack PUBLIC key in this HTML.
+         * 2. PAYSTACK_BACKEND_URL must point to your HTTPS backend.
+         * 3. The backend verifies the payment with Paystack's SECRET key,
+         *    then creates the MikroTik Hotspot voucher.
+         */
+        /*
+         * IMPORTANT: replace this with your real Paystack public key from the Paystack dashboard.
+         * The value below is a placeholder to prevent the browser from using an invalid key.
+         */
+        var PAYSTACK_PUBLIC_KEY = 'pk_test_34f0114100a3382334a8db46bc375febdcba5405';
+        /*
+         * Set this to your HTTPS backend base URL, without a trailing slash.
+         * Example: https://billing.ea-soft.com/api
+         */
+        var PAYSTACK_BACKEND_URL = 'http://104.248.239.23/api';
+
+        function renderPlans(plans) {
+            var packageList = document.getElementById('package-list');
+            if (!packageList) return;
+            packageList.innerHTML = plans.map(function (plan) {
+                return '<div class="package-card">' +
+                    '<div class="package-info"><h4>' + plan.name + '</h4><p>' + plan.dataLimit + ' GB</p></div>' +
+                    '<div style="text-align: right;"><div class="package-price">GH₵ ' + Number(plan.price).toFixed(2) + '</div>' +
+                    '<button class="buy-btn" data-plan-name="' + plan.name.replace(/"/g, '&quot;') + '" data-plan-price="' + plan.price + '">BUY</button></div>' +
+                    '</div>';
+            }).join('');
+            Array.prototype.forEach.call(packageList.querySelectorAll('.buy-btn'), function (button) {
+                button.onclick = function () {
+                    payWithPaystack(button.getAttribute('data-plan-name'), Number(button.getAttribute('data-plan-price')), button);
+                };
+            });
+        }
+
+        fetch(PAYSTACK_BACKEND_URL + '/public/plans')
+            .then(function (response) { return response.json(); })
+            .then(function (data) { if (data.success && Array.isArray(data.plans)) renderPlans(data.plans); })
+            .catch(function () { document.getElementById('package-list').innerHTML = '<p class="info">Plans are temporarily unavailable. Please refresh.</p>'; });
+
+        function normalizeMomoNumber(rawPhone) {
+            var cleaned = (rawPhone || '').replace(/\D/g, '');
+
+            if (!cleaned) {
+                return { valid: false, value: '' };
+            }
+
+            if (cleaned.length === 10 && /^0[2-9]/.test(cleaned)) {
+                return {
+                    valid: true,
+                    value: '+233' + cleaned.substring(1)
+                };
+            }
+
+            if (cleaned.length === 12 && /^233[2-9]/.test(cleaned)) {
+                return {
+                    valid: true,
+                    value: '+' + cleaned
+                };
+            }
+
+            return { valid: false, value: '' };
+        }
+
+        function generateVoucherUsername() {
+            return 'EA-' + Math.floor(100000 + Math.random() * 900000);
+        }
+
+        function generateVoucherPassword() {
+            return Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        async function createPaystackTransaction(planName, amount, phone) {
+            var response;
+
+            try {
+                response = await fetch(PAYSTACK_BACKEND_URL + '/initiate-payment', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        planName: planName,
+                        amount: amount,
+                        phone: phone,
+                        email: 'botee2020@gmail.com'
+                    })
+                });
+            } catch (error) {
+                throw new Error(
+                    'Payment server cannot be reached at ' + PAYSTACK_BACKEND_URL +
+                    '. Allow this backend host in MikroTik Walled Garden and confirm the server is running.'
+                );
+            }
+
+            var data = await response.json().catch(function () {
+                return {};
+            });
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.message || 'The payment request could not be started.');
+            }
+
+            return data;
+        }
+
+        async function createVoucherAfterPayment(reference, planName, amount, phone, username, password) {
+            var response;
+
+            try {
+                response = await fetch(PAYSTACK_BACKEND_URL + '/payment-complete', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        reference: reference,
+                        planName: planName,
+                        amount: amount,
+                        phone: phone,
+                        username: username,
+                        password: password
+                    })
+                });
+            } catch (error) {
+                throw new Error(
+                    'The payment server could not be reached while creating the voucher at ' +
+                    PAYSTACK_BACKEND_URL + '. Check that the backend is running and allowed by the hotspot walled garden.'
+                );
+            }
+
+            var data = await response.json().catch(function () {
+                return {};
+            });
+
+            if (!response.ok || !data.success) {
+                throw new Error(
+                    data.message ||
+                    'The payment was received, but the voucher could not be created. Backend HTTP status: ' + response.status
+                );
+            }
+
+            return data;
+        }
+
+        async function payWithPaystack(planName, amount, button) {
+            var phoneInfo = normalizeMomoNumber(
+                document.getElementById('momo_phone').value
+            );
+
+            if (!phoneInfo.valid) {
+                alert('Please enter a valid Ghana mobile money number first.');
+                return;
+            }
+
+            if (!PAYSTACK_PUBLIC_KEY || PAYSTACK_PUBLIC_KEY.indexOf('REPLACE_WITH') !== -1) {
+                alert('Paystack public key is missing or invalid. Add your real public key in login.html and try again.');
+                return;
+            }
+
+            if (!PAYSTACK_BACKEND_URL || PAYSTACK_BACKEND_URL.indexOf('YOUR-BACKEND') !== -1) {
+                alert('Payment server has not been configured yet.');
+                return;
+            }
+
+            if (button) {
+                button.disabled = true;
+                button.textContent = 'PROCESSING...';
+            }
+
+            try {
+                var phone = phoneInfo.value;
+                var generatedUser = generateVoucherUsername();
+                var generatedPass = generateVoucherPassword();
+                var paymentInit = await createPaystackTransaction(planName, amount, phone);
+
+                // Captive-portal browsers may block the Inline SDK even when its host is allowed.
+                // The hosted Paystack checkout uses the authorization URL returned by the backend.
+                if (typeof PaystackPop === 'undefined') {
+                    if (!paymentInit.authorization_url) {
+                        throw new Error('Paystack checkout URL was not returned by the payment server.');
+                    }
+
+                    window.location.href = paymentInit.authorization_url;
+                    return;
+                }
+
+                var paystack = new PaystackPop();
+
+                paystack.newTransaction({
+                    key: PAYSTACK_PUBLIC_KEY,
+                    email: 'botee2020@gmail.com',
+                    amount: Math.round(amount * 100),
+                    currency: 'GHS',
+                    reference: paymentInit.reference,
+                    channels: ['mobile_money'],
+                    phone: phone,
+                    metadata: {
+                        custom_fields: [
+                            {
+                                display_name: 'Mobile Number',
+                                variable_name: 'mobile_number',
+                                value: phone
+                            },
+                            {
+                                display_name: 'Package',
+                                variable_name: 'package_name',
+                                value: planName
+                            },
+                            {
+                                display_name: 'Voucher Username',
+                                variable_name: 'voucher_username',
+                                value: paymentInit.username || generatedUser
+                            },
+                            {
+                                display_name: 'Voucher Password',
+                                variable_name: 'voucher_password',
+                                value: paymentInit.password || generatedPass
+                            }
+                        ]
+                    },
+
+                    onLoad: function () {
+                        console.log('Paystack payment window loaded.');
+                    },
+
+                    onSuccess: async function (transaction) {
+                        try {
+                            alert('Payment completed. Verifying payment and creating your Wi-Fi voucher...');
+
+                            var result = await createVoucherAfterPayment(
+                                transaction.reference,
+                                planName,
+                                amount,
+                                phone,
+                                paymentInit.username || generatedUser,
+                                paymentInit.password || generatedPass
+                            );
+
+                            document.getElementById('username').value = result.username;
+                            document.getElementById('password').value = result.password;
+
+                            alert(
+                                'Payment successful!\n\n' +
+                                'Username: ' + result.username + '\n' +
+                                'Password: ' + result.password + '\n\n' +
+                                'Logging you into the hotspot...'
+                            );
+
+                            if (
+                                typeof doLogin === 'function' &&
+                                document.querySelector('form[name="sendin"]')
+                            ) {
+                                document.sendin.username.value = result.username;
+                                document.sendin.password.value =
+                                    hexMD5(
+                                        '$(chap-id)' +
+                                        result.password +
+                                        '$(chap-challenge)'
+                                    );
+                                document.sendin.submit();
+                            } else {
+                                document.login.submit();
+                            }
+
+                        } catch (error) {
+                            console.error(error);
+                            alert(
+                                'Payment was completed, but voucher creation failed.\n\n' +
+                                error.message +
+                                '\n\nPlease contact EA-Soft support with reference: ' +
+                                transaction.reference
+                            );
+
+                            if (button) {
+                                button.disabled = false;
+                                button.textContent = 'BUY';
+                            }
+                        }
+                    },
+
+                    onCancel: function () {
+                        if (button) {
+                            button.disabled = false;
+                            button.textContent = 'BUY';
+                        }
+
+                        alert('Transaction cancelled.');
+                    },
+
+                    onError: function (error) {
+                        console.error('Paystack error:', error);
+
+                        if (button) {
+                            button.disabled = false;
+                            button.textContent = 'BUY';
+                        }
+
+                        alert(
+                            'Paystack could not start the payment.\n\n' +
+                            (error && error.message ? error.message : 'Unknown payment error.')
+                        );
+                    }
+                });
+            } catch (error) {
+                console.error(error);
+
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = 'BUY';
+                }
+
+                alert(
+                    'Unable to start the payment request.\n\n' +
+                    (error && error.message ? error.message : 'Unknown error.')
+                );
+            }
+        }
+    </script>
+</body>
+
+</html>

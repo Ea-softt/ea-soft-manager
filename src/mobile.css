@@ -1,0 +1,11 @@
+.modal-backdrop { overflow-y: auto; }
+.modal { max-height: calc(100dvh - 40px); overflow-y: auto; }
+@media (max-width: 640px) {
+  .toolbar { flex-wrap: wrap; }
+  .toolbar .secondary-button { min-height: 44px; }
+  .sidebar { height: calc(66px + env(safe-area-inset-bottom)); padding-bottom: calc(7px + env(safe-area-inset-bottom)); }
+  .main-content { padding-bottom: calc(66px + env(safe-area-inset-bottom)); }
+  .topbar { height: auto; min-height: 64px; padding-top: calc(14px + env(safe-area-inset-top)); }
+  .modal input, .modal select, .settings-panel input { font-size: 16px; }
+  .modal-backdrop { padding-top: calc(20px + env(safe-area-inset-top)); padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+}
