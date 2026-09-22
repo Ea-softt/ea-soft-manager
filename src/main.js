@@ -35,7 +35,9 @@ function getDefaultApiUrl() {
 const initialState = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.plans && saved?.users) {
+    if (saved?.settings) {
+      saved.plans = [];
+      saved.users = [];
       saved.settings = { apiUrl: getDefaultApiUrl(), adminToken: '', currency: 'GH₵', ...(saved.settings || {}) };
       if (!saved.settings.apiUrl) saved.settings.apiUrl = getDefaultApiUrl();
       return saved;
@@ -45,6 +47,14 @@ const initialState = () => {
 };
 
 let state = initialState();
+let authenticated = false;
+let accountEmail = '';
+let loginMode = 'login';
+let recoveryEmail = '';
+let authGeneration = 0;
+state.settings.adminToken = '';
+state.users = [];
+state.plans = [];
 let activeView = 'overview';
 let searchTerm = '';
 let statusFilter = 'all';
@@ -55,23 +65,92 @@ let bulkCreating = false;
 let bulkDeleting = false;
 const selectedVoucherIds = new Set();
 
-function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } })); }
+persist();
+
+function signOut() {
+  if (authenticated) apiRequest('/api/admin/session', { method: 'DELETE' }).catch(() => {});
+  authenticated = false;
+  accountEmail = '';
+  loginMode = 'login';
+  authGeneration += 1;
+  state.settings.adminToken = '';
+  state.users = [];
+  state.plans = [];
+  editingUser = null;
+  editingPlan = null;
+  selectedVoucherIds.clear();
+  activeView = 'overview';
+  persist();
+  render();
+}
+
+function renderLogin() {
+  const recovering = loginMode === 'forgot';
+  const resetting = loginMode === 'reset';
+  const title = recovering ? 'Forgot password' : resetting ? 'Reset password' : 'Admin sign in';
+  document.querySelector('#app').innerHTML = `<main class="login-page"><form class="panel settings-panel login-card" id="admin-login-form"><p class="eyebrow">EA-SOFT MANAGER</p><h1>${title}</h1><p>${recovering ? 'Enter your account email to receive a reset code.' : resetting ? 'Enter the code from your email and choose a new password.' : 'Sign in to manage vouchers, plans, and finances.'}</p><label>Email<input name="email" type="email" required autocomplete="username" maxlength="254" /></label>${resetting ? '<label>Reset code<input name="code" required autocomplete="one-time-code" maxlength="12" /></label>' : ''}${!recovering ? `<label>${resetting ? 'New password' : 'Password'}<input name="password" type="password" required ${resetting ? 'minlength="12"' : ''} maxlength="256" autocomplete="${resetting ? 'new-password' : 'current-password'}" /></label>` : ''}${resetting ? '<label>Confirm password<input name="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label>' : ''}<p id="login-error" role="status" aria-live="polite"></p><button class="primary-button full-button" type="submit">${recovering ? 'Send reset code' : resetting ? 'Save new password' : 'Sign in'}</button><button class="text-button" type="button" id="login-mode">${loginMode === 'login' ? 'Forgot password?' : 'Back to sign in'}</button>${recovering ? '<button class="text-button" type="button" id="have-code">I already have a reset code</button>' : ''}</form></main>`;
+  const form = document.querySelector('#admin-login-form');
+  form.elements.email.value = recoveryEmail;
+  document.querySelector('#login-mode').onclick = () => { loginMode = loginMode === 'login' ? 'forgot' : 'login'; renderLogin(); };
+  const haveCode = document.querySelector('#have-code');
+  if (haveCode) haveCode.onclick = () => { recoveryEmail = form.elements.email.value; loginMode = 'reset'; renderLogin(); };
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    const errorText = form.querySelector('#login-error');
+    button.disabled = true;
+    errorText.textContent = '';
+    const email = form.elements.email.value.trim();
+    try {
+      if (recovering) {
+        const result = await apiRequest('/api/admin/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+        recoveryEmail = email;
+        loginMode = 'reset';
+        renderLogin();
+        document.querySelector('#login-error').textContent = result.message;
+      } else if (resetting) {
+        const password = form.elements.password.value;
+        if (password !== form.elements.confirmPassword.value) throw new Error('Passwords do not match.');
+        await apiRequest('/api/admin/reset-password', { method: 'POST', body: JSON.stringify({ email, code: form.elements.code.value, password }) });
+        recoveryEmail = email;
+        loginMode = 'login';
+        renderLogin();
+        document.querySelector('#login-error').textContent = 'Password updated. Sign in with your new password.';
+      } else {
+        const result = await apiRequest('/api/admin/session', { method: 'POST', body: JSON.stringify({ email, password: form.elements.password.value }) });
+        state.settings.adminToken = result.token;
+        accountEmail = result.email;
+        authenticated = true;
+        recoveryEmail = '';
+        persist();
+        render();
+        await refreshVoucherStatus();
+      }
+    } catch (error) {
+      errorText.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
 function apiUrl(pathname = '') { return `${state.settings.apiUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')}${pathname}`; }
 function hasRemoteApi() { return Boolean(state.settings.apiUrl && state.settings.adminToken); }
 async function apiRequest(pathname, options = {}) {
+  const generation = authGeneration;
   let endpoint;
   try {
     endpoint = new URL(apiUrl(pathname));
     if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error();
   } catch {
-    throw new Error('Enter a valid Manager API URL beginning with http:// or https:// in Settings.');
+    throw new Error('The server connection is not configured correctly. Contact the administrator.');
   }
   if (!Capacitor.isNativePlatform() && window.location.protocol === 'https:' && endpoint.protocol === 'http:') {
     throw new Error('The manager is open over HTTPS, but the API URL uses HTTP. The browser blocks this connection. Set the Manager API URL to the HTTPS address of your backend.');
   }
   let response;
   try {
-    const headers = { 'Content-Type': 'application/json', 'x-admin-token': state.settings.adminToken.trim(), ...(options.headers || {}) };
+    const headers = { 'Content-Type': 'application/json', ...(state.settings.adminToken ? { Authorization: `Bearer ${state.settings.adminToken}` } : {}), ...(options.headers || {}) };
     if (Capacitor.isNativePlatform()) {
       const result = await CapacitorHttp.request({ url: endpoint.href, method: options.method || 'GET', headers, data: options.body ? JSON.parse(options.body) : undefined, connectTimeout: 15000, readTimeout: 60000 });
       response = { status: result.status, ok: result.status >= 200 && result.status < 300, json: async () => typeof result.data === 'string' ? JSON.parse(result.data) : result.data };
@@ -79,15 +158,20 @@ async function apiRequest(pathname, options = {}) {
       response = await fetch(endpoint.href, { ...options, headers });
     }
   } catch {
-    throw new Error(`Cannot reach ${endpoint.origin}${endpoint.pathname}. Check the Manager API URL in Settings and your connection. If the backend is reachable, check its HTTPS certificate and CORS settings.`);
+    throw new Error(`Cannot reach ${endpoint.origin}${endpoint.pathname}. Check your connection or contact the administrator. If the backend is reachable, check its HTTPS certificate and CORS settings.`);
   }
   const data = await response.json().catch(() => ({}));
-  if (response.status === 404) throw new Error('Manager API route is missing on the server. Upload the latest hotspot/server.js and restart the backend.');
+  if (generation !== authGeneration) throw new Error('You have signed out. Sign in again to continue.');
+  if (response.status === 401) {
+    if (authenticated) signOut();
+    throw new Error(data.message || 'Your session has expired. Please sign in again.');
+  }
+  if (response.status === 404) throw new Error(`The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Install the updated server.js, admin-auth.js, package.json, and package-lock.json, run npm install, then restart the backend.`);
   if (!response.ok || data.success === false) throw new Error(data.message || `API request failed (${response.status})`);
   return data;
 }
 async function syncRemoteState() {
-  if (!hasRemoteApi()) throw new Error('Add the backend API URL and manager token in Settings first.');
+  if (!hasRemoteApi()) throw new Error('Sign in to connect to your workspace.');
   const remote = await apiRequest('/api/admin/state');
   if (bulkCreating || bulkDeleting) return;
   state.plans = remote.plans;
@@ -114,6 +198,7 @@ function icon(name, size = 18) {
 }
 
 function render() {
+  if (!authenticated) { renderLogin(); return; }
   for (const id of selectedVoucherIds) { if (!state.users.some((user) => user.id === id)) selectedVoucherIds.delete(id); }
   refreshStatus();
   const activeUsers = state.users.filter((user) => user.status === 'active').length;
@@ -131,10 +216,10 @@ function render() {
           ${navItem('finances', 'CalendarDays', 'Finances')}
           ${navItem('settings', 'Settings', 'Settings')}
         </nav>
-        <div class="sidebar-foot"><span class="status-dot"></span> Local workspace</div>
+        <div class="sidebar-foot"><span class="status-dot"></span> Admin workspace</div>
       </aside>
       <main class="main-content">
-        <header class="topbar"><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="avatar">EA</button></div></header>
+        <header class="topbar"><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
         <section class="page-wrap">${renderView({ activeUsers, revenue, expiring })}</section>
       </main>
     </div>
@@ -201,7 +286,25 @@ function userTable(users, full = false) {
 }
 function planMini(plan) { return `<div class="mini-plan"><span class="plan-color ${plan.color}"></span><div><strong>${plan.name}</strong><small>${plan.dataLimit} GB · ${plan.duration} ${plan.period}</small></div><b>${money(plan.price)}</b></div>`; }
 function renderPlans() { return `<div class="heading-row"><div><p class="eyebrow">PRODUCT CATALOG</p><h1>Plans & pricing</h1><p class="subhead">Change price, data limit, and time limit without touching the hotspot portal.</p></div><button class="primary-button" data-action="new-plan">${icon('Plus')} Add plan</button></div><div class="plan-grid">${state.plans.map((plan) => `<article class="plan-card ${plan.color}"><div class="plan-card-top"><span class="plan-color"></span><div class="row-actions"><button class="icon-button small" data-action="edit-plan" data-id="${plan.id}" title="Edit plan">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-plan" data-id="${plan.id}" title="Delete plan">${icon('Trash2', 16)}</button></div></div><h2>${plan.name}</h2><p class="plan-price">${money(plan.price)}</p><div class="plan-meta"><span>${icon('Database', 15)} ${plan.dataLimit} GB</span><span>${icon('Clock3', 15)} ${plan.duration} ${plan.period}</span><span>Shared: ${plan.sharedUsers || 1}</span><span>${plan.rateLimit || 'No rate limit'}</span></div></article>`).join('')}</div>`; }
-function renderSettings() { return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>Settings</h1><p class="subhead">Connect this manager to the backend that reaches MikroTik and your DigitalOcean host.</p></div></div><section class="panel settings-panel"><div class="settings-icon">${icon('Smartphone', 24)}</div><div><h2>Connected workspace</h2><p>The browser talks only to the protected backend. Keep the MikroTik, Paystack, SMS, and DigitalOcean credentials on that server.</p></div><label>Currency<input id="currency-input" value="${state.settings.currency}" maxlength="4" /></label><label>Manager API URL<input id="api-url-input" value="${state.settings.apiUrl || DEFAULT_API_URL}" placeholder="https://your-digitalocean-host.example.com/api" /></label><label>Manager API token<input id="admin-token-input" type="password" value="${state.settings.adminToken || ''}" placeholder="ADMIN_API_TOKEN from backend .env" /></label><p class="connection-note">The API token must match <strong>ADMIN_API_TOKEN</strong> on the online backend. Saving settings connects automatically; backend data syncs every 10 seconds.</p><div class="settings-actions"><button class="secondary-button" data-action="import">${icon('Upload')} Import backup</button><button class="primary-button" data-action="save-settings">${icon('Save')} Save settings</button></div></section>`; }
+function renderSettings() {
+  return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>Settings</h1><p class="subhead">Manage your admin account and workspace preferences.</p></div></div><section class="panel settings-panel"><h2>Admin account</h2><form id="account-form" class="settings-panel"><label>Email / username<input name="email" type="email" required maxlength="254" autocomplete="username" /></label><label>Current password<input name="currentPassword" type="password" required maxlength="256" autocomplete="current-password" /></label><label>New password (optional)<input name="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm new password<input name="confirmPassword" type="password" maxlength="256" autocomplete="new-password" /></label><p>Your email is your username and receives password-reset codes. Use at least 12 characters for a new password. Saving signs out all sessions.</p><p id="account-message" role="status" aria-live="polite"></p><button class="primary-button" type="submit">Update account</button></form><h2>Workspace</h2><label>Currency<input id="currency-input" maxlength="4" /></label><div class="settings-actions"><button class="secondary-button" data-action="import">${icon('Upload')} Import backup</button><button class="primary-button" data-action="save-settings">${icon('Save')} Save settings</button></div></section>`;
+}
+async function saveAccount(event) {
+  event.preventDefault();
+  const form = event.target;
+  const button = form.querySelector('button');
+  const message = form.querySelector('#account-message');
+  button.disabled = true;
+  try {
+    const fields = Object.fromEntries(new FormData(form));
+    if (fields.newPassword !== fields.confirmPassword) throw new Error('Passwords do not match.');
+    await apiRequest('/api/admin/account', { method: 'PUT', body: JSON.stringify(fields) });
+    recoveryEmail = fields.email;
+    signOut();
+    document.querySelector('#login-error').textContent = 'Account updated. Sign in with your updated details.';
+  } catch (error) { message.textContent = error.message; }
+  finally { button.disabled = false; }
+}
 function renderModal() {
   if (editingUser?.bulk) {
     return `<div class="modal-backdrop"><form class="modal" id="bulk-user-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">BULK VOUCHERS</p><h2>Create bulk vouchers</h2><label>Plan / package<select name="planId" required>${state.plans.map((plan) => `<option value="${plan.id}">${plan.name} · ${plan.dataLimit} GB · ${plan.duration} ${plan.period} · ${money(plan.price)}</option>`).join('')}</select></label><div class="form-row"><label>Quantity<input name="quantity" type="number" min="1" max="100" step="1" value="10" required /></label><label>Amount paid per voucher<input name="amount" type="number" min="0" step="0.01" value="0" required /></label></div><label>Mobile number (optional)<input name="phone" /></label><p>Leave amount paid at zero for future sales. Connected vouchers start validity on first login.</p><label><span><input name="download" type="checkbox" checked /> Download credentials as CSV</span></label><p id="bulk-progress" role="status" aria-live="polite"></p><button class="primary-button full-button" type="submit" ${state.plans.length ? '' : 'disabled'}>${icon('Save')} Create vouchers</button></form></div>`;
@@ -215,11 +318,11 @@ function renderModal() {
   const plan = editingPlan;
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
-function bindEvents() { document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
-async function handleAction(action, id) { if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
+function bindEvents() { const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
+async function handleAction(action, id) { if (!authenticated) return; if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
-async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH₵'; state.settings.apiUrl = document.querySelector('#api-url-input')?.value || ''; state.settings.adminToken = document.querySelector('#admin-token-input')?.value || ''; persist(); if (hasRemoteApi()) { try { await syncRemoteState(); } catch (error) { alert(`Settings saved, but backend sync failed: ${error.message}`); } } }
+async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH\u20b5'; persist(); }
 async function saveExportFile(filename, text, mimeType) {
   if (Capacitor.isNativePlatform()) {
     await FileExport.exportFile({ filename, text, mimeType: mimeType.split(';')[0] });
@@ -234,12 +337,12 @@ async function saveExportFile(filename, text, mimeType) {
 }
 async function exportBackup() {
   try {
-    await saveExportFile('ea-soft-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(state, null, 2), 'application/json');
+    await saveExportFile('ea-soft-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify({ ...state, settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } }, null, 2), 'application/json');
   } catch (error) {
     alert('Could not export backup: ' + error.message);
   }
 }
-function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, settings: { apiUrl: getDefaultApiUrl(), adminToken: '', currency: 'GH₵', ...(imported.settings || {}) } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
+function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, settings: { ...state.settings } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
 
 function voucherRandomNumber(limit) {
   const randomValue = new Uint32Array(1);
@@ -377,7 +480,7 @@ async function deleteSelectedVouchers() {
 }
 let statusRefreshRunning = false;
 async function refreshVoucherStatus() {
-  if (statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
+  if (!authenticated || statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
   statusRefreshRunning = true;
   try {
     if (hasRemoteApi()) await syncRemoteState();

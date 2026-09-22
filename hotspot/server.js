@@ -1,4 +1,4 @@
-require('dotenv').config({ override: true });
+require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -39,11 +39,11 @@ app.use(express.json({
 app.use(cors({
     origin: process.env.FRONTEND_ORIGIN || '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'x-paystack-signature', 'x-admin-token']
+    allowedHeaders: ['Content-Type', 'x-paystack-signature', 'Authorization']
 }));
 
 const PORT = process.env.PORT || 3000;
-const BACKEND_VERSION = 'classic-routeros-api-2026-09-21-delete-fix';
+const BACKEND_VERSION = 'email-password-admin-2026-09-22-startup-fix';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
@@ -71,13 +71,8 @@ function writeManagerData(data) {
     fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-function requireAdminToken(req, res, next) {
-    const configuredToken = process.env.ADMIN_API_TOKEN;
-    if (!configuredToken || req.get('x-admin-token') !== configuredToken) {
-        return res.status(401).json({ success: false, message: 'Manager API authentication failed.' });
-    }
-    return next();
-}
+const { installAdminAuth } = require('./admin-auth');
+const requireAdminToken = installAdminAuth(app);
 
 function required(name) {
     if (!process.env[name]) {
