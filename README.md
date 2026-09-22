@@ -73,3 +73,13 @@ EA-Soft Manager app -------------------------------> /api/admin/state
 In `hotspot/login.html`, set `PAYSTACK_BACKEND_URL` to the public backend API, for example `http://104.248.239.23/api`. The Manager uses its configured backend URL automatically. For production, expose the backend over HTTPS and use that HTTPS URL in both clients.
 
 For the connected workflow, run the backend from `hotspot/` with `npm install` and `npm start`, configure the sanitized `hotspot/.env.example`, and point the hotspot portal's `PAYSTACK_BACKEND_URL` at the same HTTPS backend. Use WireGuard or another private network path from the DigitalOcean host to the MikroTik management address; do not expose RouterOS API port `8728` to the public internet.
+
+## Finance history
+
+Revenue and daily/weekly/monthly/yearly figures use permanent sales records in
+`hotspot/data/manager.json`, separate from the voucher list. Voucher activation,
+expiry, and deletion leave those records unchanged. Editing Amount paid explicitly
+corrects the recorded amount. Existing voucher records migrate automatically on
+backend reads; already-deleted records need a backup to recover. Keep manager.json
+on persistent storage and back it up before deploying updates. Dashboard exports
+include sales history; importing voucher lists does not overwrite backend finances.

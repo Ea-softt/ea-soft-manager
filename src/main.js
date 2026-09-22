@@ -48,12 +48,16 @@ const initialState = () => {
 
 let state = initialState();
 let authenticated = false;
+let financeAvailable = false;
+let hasLoadedState = false;
+let syncError = '';
 let accountEmail = '';
 let loginMode = 'login';
 let recoveryEmail = '';
 let authGeneration = 0;
 state.settings.adminToken = '';
 state.users = [];
+state.sales = [];
 state.plans = [];
 let activeView = 'overview';
 let searchTerm = '';
@@ -71,11 +75,15 @@ persist();
 function signOut() {
   if (authenticated) apiRequest('/api/admin/session', { method: 'DELETE' }).catch(() => {});
   authenticated = false;
+  financeAvailable = false;
+  hasLoadedState = false;
+  syncError = '';
   accountEmail = '';
   loginMode = 'login';
   authGeneration += 1;
   state.settings.adminToken = '';
   state.users = [];
+state.sales = [];
   state.plans = [];
   editingUser = null;
   editingPlan = null;
@@ -174,6 +182,11 @@ async function syncRemoteState() {
   if (!hasRemoteApi()) throw new Error('Sign in to connect to your workspace.');
   const remote = await apiRequest('/api/admin/state');
   if (bulkCreating || bulkDeleting) return;
+  if (!Array.isArray(remote.plans) || !Array.isArray(remote.users)) throw new Error('The backend returned an invalid workspace response.');
+  financeAvailable = Array.isArray(remote.sales);
+  if (financeAvailable) state.sales = remote.sales;
+  hasLoadedState = true;
+  syncError = '';
   state.plans = remote.plans;
   state.users = remote.users;
   persist();
@@ -202,7 +215,7 @@ function render() {
   for (const id of selectedVoucherIds) { if (!state.users.some((user) => user.id === id)) selectedVoucherIds.delete(id); }
   refreshStatus();
   const activeUsers = state.users.filter((user) => user.status === 'active').length;
-  const revenue = state.users.reduce((total, user) => total + Number(user.amount || 0), 0);
+  const revenue = financeAvailable ? state.sales.reduce((total, user) => total + Number(user.amount || 0), 0) : null;
   const expiring = state.users.filter((user) => user.status === 'active' && user.expiresAt != null && user.expiresAt - Date.now() < 86400000).length;
 
   document.querySelector('#app').innerHTML = `
@@ -220,7 +233,7 @@ function render() {
       </aside>
       <main class="main-content">
         <header class="topbar"><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${renderView({ activeUsers, revenue, expiring })}</section>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
@@ -240,7 +253,7 @@ function startOfDay(date = new Date()) { const d = new Date(date); d.setHours(0,
 function startOfWeek(date = new Date()) { const d = new Date(date); const offset = (d.getDay() + 6) % 7; d.setDate(d.getDate() - offset); d.setHours(0, 0, 0, 0); return d.getTime(); }
 function startOfMonth(date = new Date()) { return new Date(date.getFullYear(), date.getMonth(), 1).getTime(); }
 function startOfYear(date = new Date()) { return new Date(date.getFullYear(), 0, 1).getTime(); }
-function usersInRange(from, to) { return state.users.filter((user) => user.createdAt >= from && user.createdAt < to); }
+function usersInRange(from, to) { return state.sales.filter((user) => user.createdAt >= from && user.createdAt < to); }
 function rangeStats(from, to) { const users = usersInRange(from, to); return { revenue: users.reduce((total, user) => total + Number(user.amount || 0), 0), count: users.length }; }
 function financeBuckets(range) {
   const now = new Date();
@@ -257,7 +270,9 @@ function financeBuckets(range) {
   return buckets.map((bucket) => ({ ...bucket, ...rangeStats(bucket.from, bucket.to) }));
 }
 function financeRangeTab(range, label) { return `<button class="${financeRange === range ? 'primary-button' : 'secondary-button'}" data-action="finance-range" data-id="${range}">${label}</button>`; }
+function escapeText(value) { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
 function renderFinances() {
+  if (!financeAvailable) return '<section class="panel"><h1>Finance history unavailable</h1><p>Install the finance update on the backend to load permanent sales records. No zero balances are being reported.</p></section>';
   const now = new Date();
   const summary = [
     { label: 'Today', ...rangeStats(startOfDay(now), startOfDay(now) + 86400000), color: 'mint' },
@@ -266,14 +281,14 @@ function renderFinances() {
     { label: 'This year', ...rangeStats(startOfYear(now), new Date(now.getFullYear() + 1, 0, 1).getTime()), color: 'coral' }
   ];
   const buckets = financeBuckets(financeRange);
-  return `<div class="heading-row"><div><p class="eyebrow">FINANCES</p><h1>Revenue statistics</h1><p class="subhead">Track sales across daily, weekly, monthly, and yearly periods.</p></div></div>
+  return `<div class="heading-row"><div><p class="eyebrow">FINANCES</p><h1>Revenue statistics</h1><p class="subhead">Recorded sales remain in your finances after vouchers are activated, expire, or are deleted.</p></div></div>
     <div class="stat-grid">${summary.map((item) => `<div class="stat-card ${item.color}"><span class="stat-icon">${icon('Database')}</span><p>${item.label}</p><strong>${money(item.revenue)}</strong><small>${item.count} voucher${item.count === 1 ? '' : 's'}</small></div>`).join('')}</div>
     <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Revenue by period</h2></div><div class="toolbar">${financeRangeTab('daily', 'Daily')}${financeRangeTab('weekly', 'Weekly')}${financeRangeTab('monthly', 'Monthly')}${financeRangeTab('yearly', 'Yearly')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Vouchers</th><th>Revenue</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${bucket.count}</td><td>${money(bucket.revenue)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 function renderOverview({ activeUsers, revenue, expiring }) {
   const recent = [...state.users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
   return `<div class="heading-row"><div><p class="eyebrow">CONTROL ROOM</p><h1>Good morning, EA-Soft.</h1><p class="subhead">A clear view of your hotspot business, vouchers, and plan performance.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div>
-    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers}</strong><small>Currently valid</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${money(revenue)}</strong><small>All recorded sales</small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
+    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers}</strong><small>Currently valid</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small>All recorded sales</small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
     <div class="content-grid"><section class="panel wide-panel"><div class="panel-head"><div><p class="eyebrow">LATEST ACTIVITY</p><h2>Recent vouchers</h2></div><button class="text-button" data-view="users">View all ${icon('ChevronDown')}</button></div>${userTable(recent)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR CATALOG</p><h2>Plans</h2></div><button class="icon-button small" data-action="new-plan">${icon('Plus')}</button></div><div class="mini-plans">${state.plans.slice(0, 5).map(planMini).join('')}</div></section></div>`;
 }
 function renderUsers() {
@@ -321,7 +336,7 @@ function renderModal() {
 function bindEvents() { const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
 async function handleAction(action, id) { if (!authenticated) return; if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
-async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
+async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
 async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH\u20b5'; persist(); }
 async function saveExportFile(filename, text, mimeType) {
   if (Capacitor.isNativePlatform()) {
@@ -342,7 +357,7 @@ async function exportBackup() {
     alert('Could not export backup: ' + error.message);
   }
 }
-function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, settings: { ...state.settings } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
+function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, sales: state.sales, settings: { ...state.settings } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
 
 function voucherRandomNumber(limit) {
   const randomValue = new Uint32Array(1);
@@ -397,6 +412,7 @@ async function saveBulkUsers(event) {
       if (remote) {
         const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(credentials) });
         user = result.user;
+        if (Array.isArray(result.sales)) state.sales = result.sales;
       } else {
         const now = Date.now();
         user = { ...credentials, id: crypto.randomUUID(), dataLimit: plan.dataLimit, createdAt: now, expiresAt: now + durationMs, status: 'active' };
@@ -420,6 +436,7 @@ async function saveBulkUsers(event) {
   alert(failure ? 'Created ' + created.length + ' of ' + quantity + ' vouchers. Stopped: ' + failure + ' Check the voucher list before creating the remainder.' : 'Created ' + created.length + ' vouchers for ' + plan.name + '.');
 }
 async function deleteVoucher(id) {
+  if (!financeAvailable) { alert('Update the backend before deleting vouchers so their sales history is preserved.'); return; }
   const remote = hasRemoteApi();
   if (!confirm(remote ? 'Delete this voucher from MikroTik and the manager? Active users will be disconnected.' : 'Delete this local voucher? Configure the backend to also delete MikroTik accounts.')) return;
   bulkDeleting = true;
@@ -455,6 +472,7 @@ function bindVoucherSelection() {
   }));
 }
 async function deleteSelectedVouchers() {
+  if (!financeAvailable) { alert('Update the backend before deleting vouchers so their sales history is preserved.'); return; }
   const ids = [...selectedVoucherIds].filter((id) => state.users.some((user) => user.id === id));
   if (!ids.length || !confirm('Delete ' + ids.length + ' selected vouchers' + (hasRemoteApi() ? ' from MikroTik and the manager? Active users will be disconnected.' : ' from this local manager? Configure the backend to also delete MikroTik accounts.') + '')) return;
   const remote = hasRemoteApi();
@@ -486,7 +504,9 @@ async function refreshVoucherStatus() {
     if (hasRemoteApi()) await syncRemoteState();
     if (!editingUser && !editingPlan && activeView !== 'settings' && !document.activeElement?.matches('input, select, textarea')) render();
   } catch (error) {
+    syncError = error.message;
     console.error('Voucher status refresh failed:', error.message);
+    if (authenticated && !editingUser && !editingPlan) render();
   } finally {
     statusRefreshRunning = false;
   }

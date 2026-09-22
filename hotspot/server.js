@@ -43,7 +43,7 @@ app.use(cors({
 }));
 
 const PORT = process.env.PORT || 3000;
-const BACKEND_VERSION = 'email-password-admin-2026-09-22-startup-fix';
+const BACKEND_VERSION = 'persistent-finances-2026-09-22';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
@@ -54,21 +54,51 @@ const defaultPlans = [
     { id: '30-days', name: '30 Days', period: 'days', duration: 30, dataLimit: 90, price: 70, color: 'violet' }
 ];
 
-function readManagerData() {
-    try {
-        const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-        return {
-            plans: Array.isArray(data.plans) ? data.plans : defaultPlans,
-            vouchers: Array.isArray(data.vouchers) ? data.vouchers : []
-        };
-    } catch {
-        return { plans: defaultPlans, vouchers: [] };
+// Sales outlive their vouchers. Only an explicit amount correction edits a sale.
+function preserveSales(sales, vouchers) {
+    const result = [...sales];
+    const key = (item) => item.paymentReference ? `payment:${item.paymentReference}` : `voucher:${item.voucherId || item.id}`;
+    const known = new Set(result.map(key));
+    for (const voucher of vouchers) {
+        if (!voucher.id || known.has(key(voucher))) continue;
+        result.push({
+            id: voucher.id, voucherId: voucher.id, paymentReference: voucher.paymentReference || null,
+            amount: Number(voucher.amount) || 0, createdAt: voucher.createdAt,
+            planId: voucher.planId, source: voucher.source
+        });
+        known.add(key(voucher));
     }
+    return result;
 }
-
-function writeManagerData(data) {
+function readManagerData() {
+    let data;
+    try { data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
+    catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        return { plans: defaultPlans, vouchers: [], sales: [] };
+    }
+    const vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
+    const sales = preserveSales(Array.isArray(data.sales) ? data.sales : [], vouchers);
+    const result = { plans: Array.isArray(data.plans) ? data.plans : defaultPlans, vouchers, sales };
+    // Persist migration before a delete or status update can change the voucher list.
+    if (!Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
+    return result;
+}
+function saveManagerData(data) {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(data, null, 2));
+    fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
+}
+function writeManagerData(data, correctedVoucher = null) {
+    // Async router operations may hold old snapshots. Always retain the latest sales.
+    const latest = readManagerData();
+    data.sales = preserveSales(latest.sales, data.vouchers);
+    if (correctedVoucher) {
+        const sale = data.sales.find((item) => item.voucherId === correctedVoucher.id ||
+            (correctedVoucher.paymentReference && item.paymentReference === correctedVoucher.paymentReference));
+        if (sale) sale.amount = correctedVoucher.amount;
+    }
+    saveManagerData(data);
 }
 
 const { installAdminAuth } = require('./admin-auth');
@@ -1097,7 +1127,8 @@ app.get('/api/health', (req, res) => {
         res.json({
             success: true,
             plans: data.plans,
-            users: data.vouchers
+            users: data.vouchers,
+            sales: data.sales
         });
 
     } catch (error) {
@@ -1203,7 +1234,7 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
 
         data.vouchers.unshift(voucher);
         writeManagerData(data);
-        return res.status(201).json({ success: true, user: voucher });
+        return res.status(201).json({ success: true, user: voucher, sales: data.sales });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ success: false, message: error.message || 'Voucher creation failed.' });
@@ -1226,8 +1257,8 @@ app.put('/api/admin/vouchers/:id', requireAdminToken, (req, res) => {
 
     voucher.phone = String(req.body?.phone || '').trim();
     voucher.amount = amount;
-    writeManagerData(data);
-    return res.json({ success: true, user: voucher });
+    writeManagerData(data, voucher);
+    return res.json({ success: true, user: voucher, sales: data.sales });
 });
 
 app.delete('/api/admin/vouchers/:id', requireAdminToken, async (req, res) => {

@@ -34,12 +34,31 @@ async function main() {
   assert.match(error.textContent, /expired/);
   assert.equal(vm.runInContext('authenticated', context), false);
 
-  context.fetch = async () => ({ status: 200, ok: true, json: async () => ({ success: true, token: 'session-secret', email: 'admin@example.test', plans: [], users: [] }) });
+  context.fetch = async () => ({ status: 200, ok: true, json: async () => ({ success: true, token: 'session-secret', email: 'admin@example.test', plans: [], users: [], sales: [] }) });
   form.elements.password.value = 'valid-secret';
   await submit({ preventDefault() {} });
   assert.equal(vm.runInContext('authenticated', context), true);
   assert.match(app.innerHTML, /Sign out/);
   assert.doesNotMatch(saved, /valid-secret/);
+
+  // An older server must still display its records, without inventing finance totals.
+  context.fetch = async () => ({ status: 200, ok: true, json: async () => ({ success: true,
+    plans: [{ id: 'daily', name: 'Daily', price: 5 }],
+    users: [{ id: 'retained', username: 'EA-123', planId: 'daily', amount: 5, createdAt: Date.now(), status: 'active' }]
+  }) });
+  await vm.runInContext('syncRemoteState()', context);
+  assert.equal(vm.runInContext('state.users.length', context), 1);
+  assert.equal(vm.runInContext('state.plans.length', context), 1);
+  assert.equal(vm.runInContext('financeAvailable', context), false);
+  assert.match(vm.runInContext('renderFinances()', context), /Finance history unavailable/);
+  vm.runInContext('render()', context);
+  assert.match(app.innerHTML, /EA-123/);
+  assert.match(app.innerHTML, /backend needs the finance update/);
+
+  context.fetch = async () => ({ status: 502, ok: false, json: async () => ({ message: 'Backend unavailable' }) });
+  await vm.runInContext('refreshVoucherStatus()', context);
+  assert.equal(vm.runInContext('state.users.length', context), 1);
+  assert.match(app.innerHTML, /Backend unavailable/);
 
   let complete;
   context.fetch = (_, options) => options.method === 'DELETE' ? Promise.resolve({ status: 200, ok: true, json: async () => ({ success: true }) }) : new Promise((resolve) => { complete = resolve; });

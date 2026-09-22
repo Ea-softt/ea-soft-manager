@@ -16,7 +16,7 @@ Updating the dashboard or uploading MikroTik's login.html does not update this s
 4. Run `npm install` inside that backend folder.
 5. Restart the existing Node service using its current process manager (for example,
    PM2, systemd, or the hosting console). Do not start a second copy on the same port.
-6. Check `/api/health`. Its version should be `email-password-admin-2026-09-22-startup-fix`.
+6. Check `/api/health`. Its version should be `persistent-finances-2026-09-22`.
 7. An empty POST to `/api/admin/session` should return 401 (incorrect credentials),
    not 404. A 503 response means the initial account settings still need configuration.
 8. Sign in using the configured email and password.
@@ -36,3 +36,13 @@ errors, an unsupported Node version, and the port used by the Nginx upstream.
 The installed Nodemailer 10 dependency requires Node 20 or later for reset emails.
 This update loads that optional dependency only when sending a reset email, so a
 missing mail dependency does not stop sign-in or payment routes from starting.
+
+## Permanent finance history
+
+This version saves sales separately from vouchers in data/manager.json. Back up
+that file before upgrading and preserve it during deployment. Existing vouchers
+are migrated automatically. Activation, expiry, and single or bulk deletion do
+not remove income or change its original reporting date. Explicit amount-paid
+corrections still update income. Previously deleted records require a backup to
+recover; the server cannot reconstruct those sales. Deploy the backend first,
+then publish the updated Manager dashboard (or rebuild the Android app).
