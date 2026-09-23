@@ -4,6 +4,8 @@ import './mobile.css';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 
 const FileExport = registerPlugin('FileExport');
+const BiometricLogin = registerPlugin('BiometricLogin');
+const isAndroid = () => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 
 const STORAGE_KEY = 'ea-soft-manager-v1';
 const DEFAULT_API_URL = 'http://104.248.239.23/api';
@@ -97,9 +99,10 @@ function renderLogin() {
   const recovering = loginMode === 'forgot';
   const resetting = loginMode === 'reset';
   const title = recovering ? 'Forgot password' : resetting ? 'Reset password' : 'Admin sign in';
-  document.querySelector('#app').innerHTML = `<main class="login-page"><form class="panel settings-panel login-card" id="admin-login-form"><p class="eyebrow">EA-SOFT MANAGER</p><h1>${title}</h1><p>${recovering ? 'Enter your account email to receive a reset code.' : resetting ? 'Enter the code from your email and choose a new password.' : 'Sign in to manage vouchers, plans, and finances.'}</p><label>Email<input name="email" type="email" required autocomplete="username" maxlength="254" /></label>${resetting ? '<label>Reset code<input name="code" required autocomplete="one-time-code" maxlength="12" /></label>' : ''}${!recovering ? `<label>${resetting ? 'New password' : 'Password'}<input name="password" type="password" required ${resetting ? 'minlength="12"' : ''} maxlength="256" autocomplete="${resetting ? 'new-password' : 'current-password'}" /></label>` : ''}${resetting ? '<label>Confirm password<input name="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label>' : ''}<p id="login-error" role="status" aria-live="polite"></p><button class="primary-button full-button" type="submit">${recovering ? 'Send reset code' : resetting ? 'Save new password' : 'Sign in'}</button><button class="text-button" type="button" id="login-mode">${loginMode === 'login' ? 'Forgot password?' : 'Back to sign in'}</button>${recovering ? '<button class="text-button" type="button" id="have-code">I already have a reset code</button>' : ''}</form></main>`;
+  document.querySelector('#app').innerHTML = `<main class="login-page"><form class="panel settings-panel login-card" id="admin-login-form"><p class="eyebrow">EA-SOFT MANAGER</p><h1>${title}</h1><p>${recovering ? 'Enter your account email to receive a reset code.' : resetting ? 'Enter the code from your email and choose a new password.' : 'Sign in to manage vouchers, plans, and finances.'}</p><label>Email<input name="email" type="email" required autocomplete="username" maxlength="254" /></label>${resetting ? '<label>Reset code<input name="code" required autocomplete="one-time-code" maxlength="12" /></label>' : ''}${!recovering ? `<label>${resetting ? 'New password' : 'Password'}<input name="password" type="password" required ${resetting ? 'minlength="12"' : ''} maxlength="256" autocomplete="${resetting ? 'new-password' : 'current-password'}" /></label>` : ''}${resetting ? '<label>Confirm password<input name="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label>' : ''}<div id="biometric-controls"></div><p id="login-error" role="status" aria-live="polite"></p><button class="primary-button full-button" type="submit">${recovering ? 'Send reset code' : resetting ? 'Save new password' : 'Sign in'}</button><button class="text-button" type="button" id="login-mode">${loginMode === 'login' ? 'Forgot password?' : 'Back to sign in'}</button>${recovering ? '<button class="text-button" type="button" id="have-code">I already have a reset code</button>' : ''}</form></main>`;
   const form = document.querySelector('#admin-login-form');
   form.elements.email.value = recoveryEmail;
+  if (isAndroid() && loginMode === 'login') refreshBiometricControls(form);
   document.querySelector('#login-mode').onclick = () => { loginMode = loginMode === 'login' ? 'forgot' : 'login'; renderLogin(); };
   const haveCode = document.querySelector('#have-code');
   if (haveCode) haveCode.onclick = () => { recoveryEmail = form.elements.email.value; loginMode = 'reset'; renderLogin(); };
@@ -121,12 +124,17 @@ function renderLogin() {
         const password = form.elements.password.value;
         if (password !== form.elements.confirmPassword.value) throw new Error('Passwords do not match.');
         await apiRequest('/api/admin/reset-password', { method: 'POST', body: JSON.stringify({ email, code: form.elements.code.value, password }) });
+        if (isAndroid()) await BiometricLogin.clear().catch(() => {});
         recoveryEmail = email;
         loginMode = 'login';
         renderLogin();
         document.querySelector('#login-error').textContent = 'Password updated. Sign in with your new password.';
       } else {
         const result = await apiRequest('/api/admin/session', { method: 'POST', body: JSON.stringify({ email, password: form.elements.password.value }) });
+        if (isAndroid() && document.querySelector('#enable-fingerprint')?.checked) {
+          try { await BiometricLogin.save({ email, password: form.elements.password.value, apiUrl: apiUrl() }); }
+          catch (error) { alert('Signed in, but fingerprint setup was not completed: ' + error.message); }
+        }
         state.settings.adminToken = result.token;
         accountEmail = result.email;
         authenticated = true;
@@ -142,6 +150,43 @@ function renderLogin() {
     }
   });
 }
+async function refreshBiometricControls(form) {
+  try {
+    const status = await BiometricLogin.status();
+    if (document.querySelector('#admin-login-form') !== form || loginMode !== 'login') return;
+    const controls = document.querySelector('#biometric-controls');
+    if (!controls) return;
+    controls.innerHTML = status.available
+      ? `${status.enabled ? '<button type="button" class="secondary-button full-button" id="fingerprint-login">Sign in with fingerprint</button>' : ''}<label class="biometric-option"><input type="checkbox" id="enable-fingerprint" />${status.enabled ? 'Update saved fingerprint login after signing in' : 'Enable fingerprint sign-in on this phone'}</label>`
+      : `<p>${escapeText(status.message || 'Fingerprint sign-in is unavailable. Use your password.')}</p>`;
+    document.querySelector('#fingerprint-login')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      const message = form.querySelector('#login-error');
+      const submit = form.querySelector('button[type="submit"]');
+      button.disabled = true;
+      submit.disabled = true;
+      message.textContent = '';
+      try {
+        const credentials = await BiometricLogin.unlock();
+        if (document.querySelector('#admin-login-form') !== form || loginMode !== 'login') return;
+        if (credentials.apiUrl !== apiUrl()) throw new Error('The server connection changed. Sign in with your password and enable fingerprint again.');
+        const result = await apiRequest('/api/admin/session', { method: 'POST', body: JSON.stringify({ email: credentials.email, password: credentials.password }) });
+        if (document.querySelector('#admin-login-form') !== form || loginMode !== 'login') return;
+        state.settings.adminToken = result.token;
+        accountEmail = result.email;
+        authenticated = true;
+        persist();
+        render();
+        await refreshVoucherStatus();
+      } catch (error) {
+        if (error.status === 401) await BiometricLogin.clear().catch(() => {});
+        message.textContent = error.message;
+        await refreshBiometricControls(form);
+      } finally { button.disabled = false; submit.disabled = false; }
+    });
+  } catch { /* Password login remains available if the native plugin is unavailable. */ }
+}
+
 function apiUrl(pathname = '') { return `${state.settings.apiUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')}${pathname}`; }
 function hasRemoteApi() { return Boolean(state.settings.apiUrl && state.settings.adminToken); }
 async function apiRequest(pathname, options = {}) {
@@ -172,7 +217,9 @@ async function apiRequest(pathname, options = {}) {
   if (generation !== authGeneration) throw new Error('You have signed out. Sign in again to continue.');
   if (response.status === 401) {
     if (authenticated) signOut();
-    throw new Error(data.message || 'Your session has expired. Please sign in again.');
+    const error = new Error(data.message || 'Your session has expired. Please sign in again.');
+    error.status = 401;
+    throw error;
   }
   if (response.status === 404) throw new Error(`The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Install the updated server.js, admin-auth.js, package.json, and package-lock.json, run npm install, then restart the backend.`);
   if (!response.ok || data.success === false) throw new Error(data.message || `API request failed (${response.status})`);
@@ -186,7 +233,7 @@ async function syncRemoteState() {
   financeAvailable = Array.isArray(remote.sales);
   if (financeAvailable) state.sales = remote.sales;
   hasLoadedState = true;
-  syncError = '';
+  syncError = remote.warning || '';
   state.plans = remote.plans;
   state.users = remote.users;
   persist();
@@ -202,7 +249,7 @@ function getPlan(id) { return state.plans.find((plan) => plan.id === id); }
 function refreshStatus() {
   // MikroTik-sourced vouchers carry an authoritative status from RouterOS; only
   // vouchers we manage locally should be flipped by the local expiry clock.
-  state.users = state.users.map((user) => (user.source === 'mikrotik' ? user : { ...user, status: user.status === 'expired' || (user.expiresAt != null && user.expiresAt <= Date.now()) ? 'expired' : 'active' }));
+  state.users = state.users.map((user) => (user.source === 'mikrotik' || user.provisioning === 'pending' ? user : { ...user, status: user.status === 'expired' || (user.expiresAt != null && user.expiresAt <= Date.now()) ? 'expired' : 'active' }));
   persist();
 }
 function icon(name, size = 18) {
@@ -297,12 +344,12 @@ function renderUsers() {
 }
 function userTable(users, full = false) {
   if (!users.length) return '<div class="empty-state">No voucher records match this view.</div>';
-  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td><td>${money(user.amount)}</td><td>${formatDate(user.expiresAt)}</td><td><span class="pill ${user.status}">${user.status === 'active' ? 'Active' : 'Expired'}</span></td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td><td>${money(user.amount)}</td><td>${user.activatedAt && !user.expiresAt ? 'Active ? expiry unavailable' : formatDate(user.expiresAt)}</td><td><span class="pill ${user.status}">${user.provisioning === 'pending' ? 'Paid ? activation pending' : user.status === 'active' ? 'Active' : 'Expired'}</span></td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function planMini(plan) { return `<div class="mini-plan"><span class="plan-color ${plan.color}"></span><div><strong>${plan.name}</strong><small>${plan.dataLimit} GB · ${plan.duration} ${plan.period}</small></div><b>${money(plan.price)}</b></div>`; }
 function renderPlans() { return `<div class="heading-row"><div><p class="eyebrow">PRODUCT CATALOG</p><h1>Plans & pricing</h1><p class="subhead">Change price, data limit, and time limit without touching the hotspot portal.</p></div><button class="primary-button" data-action="new-plan">${icon('Plus')} Add plan</button></div><div class="plan-grid">${state.plans.map((plan) => `<article class="plan-card ${plan.color}"><div class="plan-card-top"><span class="plan-color"></span><div class="row-actions"><button class="icon-button small" data-action="edit-plan" data-id="${plan.id}" title="Edit plan">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-plan" data-id="${plan.id}" title="Delete plan">${icon('Trash2', 16)}</button></div></div><h2>${plan.name}</h2><p class="plan-price">${money(plan.price)}</p><div class="plan-meta"><span>${icon('Database', 15)} ${plan.dataLimit} GB</span><span>${icon('Clock3', 15)} ${plan.duration} ${plan.period}</span><span>Shared: ${plan.sharedUsers || 1}</span><span>${plan.rateLimit || 'No rate limit'}</span></div></article>`).join('')}</div>`; }
 function renderSettings() {
-  return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>Settings</h1><p class="subhead">Manage your admin account and workspace preferences.</p></div></div><section class="panel settings-panel"><h2>Admin account</h2><form id="account-form" class="settings-panel"><label>Email / username<input name="email" type="email" required maxlength="254" autocomplete="username" /></label><label>Current password<input name="currentPassword" type="password" required maxlength="256" autocomplete="current-password" /></label><label>New password (optional)<input name="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm new password<input name="confirmPassword" type="password" maxlength="256" autocomplete="new-password" /></label><p>Your email is your username and receives password-reset codes. Use at least 12 characters for a new password. Saving signs out all sessions.</p><p id="account-message" role="status" aria-live="polite"></p><button class="primary-button" type="submit">Update account</button></form><h2>Workspace</h2><label>Currency<input id="currency-input" maxlength="4" /></label><div class="settings-actions"><button class="secondary-button" data-action="import">${icon('Upload')} Import backup</button><button class="primary-button" data-action="save-settings">${icon('Save')} Save settings</button></div></section>`;
+  return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>Settings</h1><p class="subhead">Manage your admin account and workspace preferences.</p></div></div><section class="panel settings-panel"><h2>Admin account</h2><form id="account-form" class="settings-panel"><label>Email / username<input name="email" type="email" required maxlength="254" autocomplete="username" /></label><label>Current password<input name="currentPassword" type="password" required maxlength="256" autocomplete="current-password" /></label><label>New password (optional)<input name="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm new password<input name="confirmPassword" type="password" maxlength="256" autocomplete="new-password" /></label><p>Your email is your username and receives password-reset codes. Use at least 12 characters for a new password. Saving signs out all sessions.</p><p id="account-message" role="status" aria-live="polite"></p><button class="primary-button" type="submit">Update account</button></form>${isAndroid() ? '<h2>Fingerprint sign-in</h2><p>Enable it from the sign-in screen after entering your password. Turning it off removes the saved login from this phone.</p><button class="secondary-button" data-action="disable-fingerprint">Disable fingerprint sign-in</button>' : ''}<h2>Recover a hotspot payment</h2><p>Enter a successful Paystack reference to verify and recover a missing purchase.</p><label>Payment reference<input id="payment-reference" /></label><button class="secondary-button" data-action="recover-payment">Recover payment</button><h2>Workspace</h2><label>Currency<input id="currency-input" maxlength="4" /></label><div class="settings-actions"><button class="secondary-button" data-action="import">${icon('Upload')} Import backup</button><button class="primary-button" data-action="save-settings">${icon('Save')} Save settings</button></div></section>`;
 }
 async function saveAccount(event) {
   event.preventDefault();
@@ -314,6 +361,7 @@ async function saveAccount(event) {
     const fields = Object.fromEntries(new FormData(form));
     if (fields.newPassword !== fields.confirmPassword) throw new Error('Passwords do not match.');
     await apiRequest('/api/admin/account', { method: 'PUT', body: JSON.stringify(fields) });
+    if (isAndroid()) await BiometricLogin.clear().catch(() => {});
     recoveryEmail = fields.email;
     signOut();
     document.querySelector('#login-error').textContent = 'Account updated. Sign in with your updated details.';
@@ -334,7 +382,7 @@ function renderModal() {
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
 function bindEvents() { const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
-async function handleAction(action, id) { if (!authenticated) return; if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
+async function handleAction(action, id) { if (!authenticated) return; if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
 async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH\u20b5'; persist(); }

@@ -447,7 +447,7 @@
 
                 // Captive-portal browsers may block the Inline SDK even when its host is allowed.
                 // The hosted Paystack checkout uses the authorization URL returned by the backend.
-                if (typeof PaystackPop === 'undefined') {
+                if (typeof PaystackPop === 'undefined' || !paymentInit.access_code) {
                     if (!paymentInit.authorization_url) {
                         throw new Error('Paystack checkout URL was not returned by the payment server.');
                     }
@@ -458,39 +458,7 @@
 
                 var paystack = new PaystackPop();
 
-                paystack.newTransaction({
-                    key: PAYSTACK_PUBLIC_KEY,
-                    email: 'botee2020@gmail.com',
-                    amount: Math.round(amount * 100),
-                    currency: 'GHS',
-                    reference: paymentInit.reference,
-                    channels: ['mobile_money'],
-                    phone: phone,
-                    metadata: {
-                        custom_fields: [
-                            {
-                                display_name: 'Mobile Number',
-                                variable_name: 'mobile_number',
-                                value: phone
-                            },
-                            {
-                                display_name: 'Package',
-                                variable_name: 'package_name',
-                                value: planName
-                            },
-                            {
-                                display_name: 'Voucher Username',
-                                variable_name: 'voucher_username',
-                                value: paymentInit.username || generatedUser
-                            },
-                            {
-                                display_name: 'Voucher Password',
-                                variable_name: 'voucher_password',
-                                value: paymentInit.password || generatedPass
-                            }
-                        ]
-                    },
-
+                paystack.resumeTransaction(paymentInit.access_code, {
                     onLoad: function () {
                         console.log('Paystack payment window loaded.');
                     },

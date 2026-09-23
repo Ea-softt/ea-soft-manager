@@ -43,7 +43,7 @@ app.use(cors({
 }));
 
 const PORT = process.env.PORT || 3000;
-const BACKEND_VERSION = 'persistent-finances-2026-09-22';
+const BACKEND_VERSION = 'recovered-activation-2026-09-23';
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
@@ -59,14 +59,16 @@ function preserveSales(sales, vouchers) {
     const result = [...sales];
     const key = (item) => item.paymentReference ? `payment:${item.paymentReference}` : `voucher:${item.voucherId || item.id}`;
     const known = new Set(result.map(key));
+    const voucherIds = new Set(result.map((item) => item.voucherId || item.id));
     for (const voucher of vouchers) {
-        if (!voucher.id || known.has(key(voucher))) continue;
+        if (!voucher.id || known.has(key(voucher)) || voucherIds.has(voucher.id)) continue;
         result.push({
             id: voucher.id, voucherId: voucher.id, paymentReference: voucher.paymentReference || null,
             amount: Number(voucher.amount) || 0, createdAt: voucher.createdAt,
             planId: voucher.planId, source: voucher.source
         });
         known.add(key(voucher));
+        voucherIds.add(voucher.id);
     }
     return result;
 }
@@ -75,11 +77,11 @@ function readManagerData() {
     try { data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
     catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        return { plans: defaultPlans, vouchers: [], sales: [] };
+        return { plans: defaultPlans, vouchers: [], sales: [], paymentAttempts: [], deletedVoucherIds: [] };
     }
     const vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
     const sales = preserveSales(Array.isArray(data.sales) ? data.sales : [], vouchers);
-    const result = { plans: Array.isArray(data.plans) ? data.plans : defaultPlans, vouchers, sales };
+    const result = { plans: Array.isArray(data.plans) ? data.plans : defaultPlans, vouchers, sales, deletedVoucherIds: Array.isArray(data.deletedVoucherIds) ? data.deletedVoucherIds : [], paymentAttempts: Array.isArray(data.paymentAttempts) ? data.paymentAttempts : [] };
     // Persist migration before a delete or status update can change the voucher list.
     if (!Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
     return result;
@@ -89,14 +91,40 @@ function saveManagerData(data) {
     fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(data, null, 2));
     fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
 }
-function writeManagerData(data, correctedVoucher = null) {
+function writeManagerData(data, correctedVoucher = null, deletedIds = [], updatePlans = false) {
     // Async router operations may hold old snapshots. Always retain the latest sales.
     const latest = readManagerData();
+    if (!updatePlans) data.plans = latest.plans;
+    const latestVouchers = new Map(latest.vouchers.map((item) => [item.id, item]));
+    data.vouchers = data.vouchers.map((item) => {
+        const current = latestVouchers.get(item.id);
+        if (!current) return item;
+        if (current.activatedAt && !item.activatedAt) item = { ...item, activatedAt: current.activatedAt, activationSource: current.activationSource };
+        if (current.expiresAt && !item.expiresAt) item = { ...item, expiresAt: current.expiresAt, durationMs: current.durationMs, expirySchedulePending: current.expirySchedulePending };
+        // Old router snapshots cannot undo a recovered purchase or completed activation.
+        if (current.paymentReference && !item.paymentReference) return current;
+        if (current.provisioning === 'ready' && item.provisioning === 'pending') {
+            return { ...item, provisioning: 'ready', status: current.status };
+        }
+        return item;
+    });
+    data.deletedVoucherIds = [...new Set([...latest.deletedVoucherIds, ...deletedIds])];
+    const ids = new Set(data.vouchers.map((item) => item.id));
+    data.vouchers = [...data.vouchers, ...latest.vouchers.filter((item) => !ids.has(item.id))]
+        .filter((item) => !data.deletedVoucherIds.includes(item.id));
+    data.paymentAttempts = latest.paymentAttempts;
     data.sales = preserveSales(latest.sales, data.vouchers);
     if (correctedVoucher) {
         const sale = data.sales.find((item) => item.voucherId === correctedVoucher.id ||
             (correctedVoucher.paymentReference && item.paymentReference === correctedVoucher.paymentReference));
-        if (sale) sale.amount = correctedVoucher.amount;
+        if (sale) {
+            sale.amount = correctedVoucher.amount;
+            if (!sale.paymentReference && correctedVoucher.paymentReference) {
+                sale.paymentReference = correctedVoucher.paymentReference;
+                sale.createdAt = correctedVoucher.createdAt;
+                sale.source = correctedVoucher.source;
+            }
+        }
     }
     saveManagerData(data);
 }
@@ -779,157 +807,67 @@ async function scheduleCalendarExpiration(username, expiresAt) {
 let calendarSyncRunning = false;
 
 
+function activationDuration(voucher, plans) {
+    if (Number(voucher.durationMs) > 0) return Number(voucher.durationMs);
+    const matches = (plan) => (voucher.planId && plan.id === voucher.planId) || (voucher.planName && plan.name === voucher.planName) ||
+        (voucher.mikrotikProfile && profileNameForPlan(plan) === voucher.mikrotikProfile);
+    const plan = plans.find(matches) || defaultPlans.find(matches);
+    return plan ? planDurationMs(plan) : 0;
+}
 async function syncCalendarActivations() {
-    if (calendarSyncRunning) {
-        return;
-    }
-
+    if (calendarSyncRunning) return;
     calendarSyncRunning = true;
-
     try {
+        const activeUsers = await readMikroTikHotspotActiveUsers();
+        // Read after the network call so newly recovered purchases are included.
         const data = readManagerData();
-
-        const activeUsers =
-            await readMikroTikHotspotActiveUsers();
-
         let changed = false;
-
+        const observedAt = Date.now();
         for (const active of activeUsers) {
-
-            const username =
-                String(active.user || '').trim();
-
-            if (!username) {
-                continue;
+            const voucher = data.vouchers.find((item) => String(item.username).trim() === String(active.user || '').trim());
+            if (!voucher) continue;
+            if (!voucher.activatedAt) {
+                voucher.activatedAt = observedAt - parseRouterOsDuration(active.uptime) * 1000;
+                voucher.activationSource = 'observed-session';
+                changed = true;
             }
-
-            const voucher =
-                data.vouchers.find(
-                    (item) =>
-                        String(item.username).trim() === username
-                );
-
-            if (!voucher) {
-                continue;
+            if (!voucher.expiresAt) {
+                const duration = activationDuration(voucher, data.plans);
+                if (duration > 0) {
+                    voucher.durationMs = duration;
+                    voucher.expiresAt = voucher.activatedAt + duration;
+                    voucher.expirySchedulePending = true;
+                    changed = true;
+                }
             }
-
-            // Already activated.
-            if (
-                voucher.activatedAt &&
-                voucher.expiresAt
-            ) {
-                continue;
-            }
-
-            const plan =
-                data.plans.find(
-                    (item) => item.id === voucher.planId
-                );
-
-            if (!plan) {
-                console.warn(
-                    `Cannot determine plan for voucher ${username}`
-                );
-
-                continue;
-            }
-
-            const durationMs =
-                planDurationMs(plan);
-
-            if (!durationMs) {
-                console.warn(
-                    `Invalid duration for plan ${plan.name}`
-                );
-
-                continue;
-            }
-
-            /*
-             * RouterOS reports how long the current
-             * session has been active.
-             *
-             * Therefore:
-             *
-             * actual login time =
-             * current time - current session uptime
-             */
-            const uptimeSeconds =
-                parseRouterOsDuration(active.uptime);
-
-            const activationAt =
-                Date.now() -
-                (uptimeSeconds * 1000);
-
-            const expiresAt =
-                activationAt +
-                durationMs;
-
-            voucher.activatedAt =
-                activationAt;
-
-            voucher.expiresAt =
-                expiresAt;
-
-            voucher.status =
-                expiresAt > Date.now()
-                    ? 'active'
-                    : 'expired';
-
-            changed = true;
-
-            console.log(
-                `Voucher activated: ${username} | ` +
-                `plan=${plan.name} | ` +
-                `activated=${new Date(activationAt).toISOString()} | ` +
-                `expires=${new Date(expiresAt).toISOString()}`
-            );
-
-            if (expiresAt <= Date.now()) {
-
-                await disableMikroTikUser(username);
-
-            } else {
-
-                await scheduleCalendarExpiration(
-                    username,
-                    expiresAt
-                );
-            }
+            if (voucher.provisioning === 'pending') { voucher.provisioning = 'ready'; changed = true; }
+            const status = voucher.expiresAt && voucher.expiresAt <= observedAt ? 'expired' : 'active';
+            if (voucher.status !== status) { voucher.status = status; changed = true; }
         }
-
-        // Keep manager status synchronized with known expiry times.
         for (const voucher of data.vouchers) {
-
-            if (
-                voucher.expiresAt &&
-                Number(voucher.expiresAt) <= Date.now() &&
-                voucher.status !== 'expired'
-            ) {
+            if (voucher.expiresAt && voucher.expiresAt <= observedAt && voucher.status !== 'expired') {
                 voucher.status = 'expired';
+                voucher.expirySchedulePending = true;
                 changed = true;
             }
         }
-
-        if (changed) {
-            writeManagerData(data);
+        // Router scheduling failures must not discard evidence that a customer is online.
+        if (changed) writeManagerData(data);
+        for (const voucher of data.vouchers.filter((item) => item.expirySchedulePending && item.expiresAt)) {
+            try {
+                if (voucher.expiresAt <= Date.now()) await disableMikroTikUser(voucher.username);
+                else await scheduleCalendarExpiration(voucher.username, voucher.expiresAt);
+                const latest = readManagerData();
+                const current = latest.vouchers.find((item) => item.id === voucher.id);
+                if (current && current.expiresAt === voucher.expiresAt) {
+                    current.expirySchedulePending = false;
+                    writeManagerData(latest);
+                }
+            } catch (error) { console.error('Expiry scheduling will retry:', voucher.username, error.message); }
         }
-
-    } catch (error) {
-
-        console.error(
-            'Calendar voucher sync error:',
-            error.message || error
-        );
-
-    } finally {
-
-        calendarSyncRunning = false;
-    }
+    } catch (error) { console.error('Calendar activation sync failed:', error.message); }
+    finally { calendarSyncRunning = false; }
 }
-
-
-
 
 function mergeMikroTikUsers(data, mikrotikUsers) {
     const knownUsernames = new Set(data.vouchers.map((voucher) => voucher.username));
@@ -1000,35 +938,6 @@ function normalizePhone(phone) {
     return cleaned;
 }
 
-// function recordPaidVoucher({ reference, planName, amount, phone, username, password, source }) {
-//     const data = readManagerData();
-//     const existing = data.vouchers.find((voucher) => voucher.paymentReference === reference);
-//     if (existing) return existing;
-
-//     const plan = data.plans.find((item) => item.name === planName);
-//     const durationMs = plan
-//         ? ({ hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] || 0) * plan.duration
-//         : 0;
-//     const now = Date.now();
-//     const voucher = {
-//         id: crypto.randomUUID(),
-//         username: String(username).trim(),
-//         password: String(password).trim(),
-//         phone: String(phone || '').trim(),
-//         planId: plan?.id || planName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-//         amount: Number(amount),
-//         dataLimit: plan?.dataLimit || 0,
-//         createdAt: now,
-//         expiresAt: durationMs ? now + durationMs : now,
-//         status: durationMs ? 'active' : 'expired',
-//         source,
-//         paymentReference: reference
-//     };
-
-//     data.vouchers.unshift(voucher);
-//     writeManagerData(data);
-//     return voucher;
-// }
 
 function recordPaidVoucher({
     reference,
@@ -1037,7 +946,9 @@ function recordPaidVoucher({
     phone,
     username,
     password,
-    source
+    source,
+    paidAt,
+    provisioning = 'pending'
 }) {
     const data = readManagerData();
 
@@ -1054,12 +965,13 @@ function recordPaidVoucher({
     const plan =
         data.plans.find(
             (item) => item.name === planName
-        );
+        ) || defaultPlans.find((item) => item.name === planName);
 
+    const imported = data.vouchers.find((item) => item.username === String(username).trim() && item.source === 'mikrotik' && !item.paymentReference);
     const now = Date.now();
 
     const voucher = {
-        id: crypto.randomUUID(),
+        id: imported?.id || crypto.randomUUID(),
 
         username: String(username).trim(),
         password: String(password).trim(),
@@ -1076,22 +988,28 @@ function recordPaidVoucher({
         dataLimit:
             plan?.dataLimit || 0,
 
-        createdAt: now,
+        createdAt: Number.isFinite(Date.parse(paidAt)) ? Date.parse(paidAt) : now,
 
         // Calendar validity starts ONLY on first login.
-        activatedAt: null,
-        expiresAt: null,
+        activatedAt: imported?.activatedAt || null,
+        expiresAt: imported?.expiresAt || null,
+        activationSource: imported?.activationSource,
+        expirySchedulePending: imported?.expirySchedulePending || false,
+        planName,
+        durationMs: imported?.durationMs || (plan ? planDurationMs(plan) : 0),
 
-        status: 'active',
+        status: provisioning === 'pending' ? 'pending' : 'active',
+        provisioning,
 
         source,
 
         paymentReference: reference
     };
 
+    if (imported) data.vouchers = data.vouchers.filter((item) => item.id !== imported.id);
     data.vouchers.unshift(voucher);
 
-    writeManagerData(data);
+    writeManagerData(data, imported ? voucher : null);
 
     return voucher;
 }
@@ -1115,33 +1033,18 @@ app.get('/api/health', (req, res) => {
 //     }
 // });
 
-    app.get('/api/admin/state', requireAdminToken, async (req, res) => {
+app.get('/api/admin/state', requireAdminToken, async (req, res) => {
+    let warning = '';
+    try { await syncCalendarActivations(); }
+    catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try {
-        await syncCalendarActivations();
-
-        const data = mergeMikroTikUsers(
-            readManagerData(),
-            await readMikroTikHotspotUsers()
-        );
-
-        res.json({
-            success: true,
-            plans: data.plans,
-            users: data.vouchers,
-            sales: data.sales
-        });
-
-    } catch (error) {
-        console.error(error);
-
-        res.status(502).json({
-            success: false,
-            message:
-                `MikroTik user refresh failed: ${
-                    error.message || error
-                }`
-        });
-    }
+        const routerUsers = await readMikroTikHotspotUsers();
+        mergeMikroTikUsers(readManagerData(), routerUsers);
+    } catch { warning = 'Router sync is unavailable. Showing saved records.'; }
+    try {
+        const data = readManagerData();
+        res.json({ success: true, plans: data.plans, users: data.vouchers, sales: data.sales, warning });
+    } catch (error) { res.status(500).json({ success: false, message: 'Could not read saved manager records.' }); }
 });
 
 app.get('/api/public/plans', (req, res) => {
@@ -1180,7 +1083,7 @@ app.put('/api/admin/plans', requireAdminToken, (req, res) => {
     syncMikroTikProfiles(data.plans)
         .then(() => removeMikroTikProfiles(removedProfiles))
         .then(() => {
-            writeManagerData(data);
+            writeManagerData(data, null, [], true);
             return res.json({ success: true, plans: data.plans });
         })
         .catch((error) => {
@@ -1216,6 +1119,7 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
         phone: String(phone || '').trim(),
 
         planId: plan.id,
+        durationMs: planDurationMs(plan),
 
         amount: Number(amount ?? plan.price),
 
@@ -1272,13 +1176,98 @@ app.delete('/api/admin/vouchers/:id', requireAdminToken, async (req, res) => {
         await deleteMikroTikUser(voucher.username);
         const latestData = readManagerData();
         latestData.vouchers = latestData.vouchers.filter((item) => item.id !== req.params.id);
-        writeManagerData(latestData);
+        writeManagerData(latestData, null, [req.params.id]);
         return res.json({ success: true });
     } catch (error) {
         console.error('Voucher deletion failed:', error.message || error);
         return res.status(502).json({ success: false, message: `Voucher deletion failed; manager record retained: ${error.message || error}` });
     }
 });
+
+const paymentJobs = new Map();
+function rememberPaymentAttempt(reference, remove = false, delay = 30000, details = {}) {
+    const data = readManagerData();
+    const previous = data.paymentAttempts.find((item) => item.reference === reference) || {};
+    data.paymentAttempts = data.paymentAttempts.filter((item) => item.reference !== reference);
+    if (!remove) data.paymentAttempts.push({ ...previous, ...details, reference, nextCheckAt: Date.now() + delay });
+    saveManagerData(data);
+}
+function fulfillPayment(reference) {
+    if (typeof reference !== 'string' || !/^[a-zA-Z0-9._=-]{1,200}$/.test(reference)) return Promise.reject(new Error('A valid payment reference is required.'));
+    if (paymentJobs.has(reference)) return paymentJobs.get(reference);
+    const job = Promise.resolve().then(async () => {
+        const transaction = await paystackVerify(reference);
+        if (transaction.status !== 'success') throw new Error('This payment has not completed successfully yet.');
+        if (transaction.reference !== reference || transaction.currency !== 'GHS' || !Number.isFinite(Number(transaction.amount)) || Number(transaction.amount) <= 0) throw new Error('Payment reference, currency, or amount is invalid.');
+        const metadata = typeof transaction.metadata === 'string' ? JSON.parse(transaction.metadata) : transaction.metadata || {};
+        const fields = Array.isArray(metadata.custom_fields) ? metadata.custom_fields : [];
+        const value = (name) => metadata[name] || fields.find((field) => field.variable_name === name)?.value;
+        const planName = value('package_name') || value('plan_name');
+        const username = value('voucher_username');
+        const password = value('voucher_password');
+        const profile = chooseProfile(planName);
+        const quotaBytes = chooseQuotaBytes(planName);
+        if (!planName || !username || !password || !profile || !quotaBytes) throw new Error('Payment is missing its hotspot package or credentials. Contact support with the reference.');
+        if (metadata.package_amount != null && Number(metadata.package_amount) !== Number(transaction.amount)) throw new Error('Payment amount does not match the checkout price.');
+        let data = readManagerData();
+        let voucher = data.vouchers.find((item) => item.paymentReference === reference);
+        const attempt = data.paymentAttempts.find((item) => item.reference === reference);
+        const plan = data.plans.find((item) => item.name === planName) || defaultPlans.find((item) => item.name === planName);
+        const expectedAmount = attempt?.amount ?? voucher?.amount ?? plan?.price;
+        if (!Number.isFinite(Number(expectedAmount)) || Math.round(Number(expectedAmount) * 100) !== Number(transaction.amount)) throw new Error('Verified payment amount does not match the package price.');
+        if (!voucher && data.sales.some((sale) => sale.paymentReference === reference)) throw new Error('This payment was already recorded and its voucher was deleted.');
+        if (!voucher) {
+            voucher = recordPaidVoucher({ reference, planName, amount: Number(transaction.amount) / 100,
+                phone: value('phone') || value('mobile_number') || transaction.customer?.phone || '',
+                username, password, source: 'online-payment', paidAt: transaction.paid_at });
+        }
+        if (voucher.provisioning === 'pending') {
+            rememberPaymentAttempt(reference);
+            try {
+                // Recover a prior successful router write if the process stopped before saving it.
+                const routerUser = (await readMikroTikHotspotUsers()).find((item) => item.name === voucher.username);
+                if (routerUser) {
+                    if (routerUser.password !== voucher.password || routerUser.profile !== profile) throw new Error('Router username exists with different credentials or package.');
+                } else await createMikroTikUser(voucher.username, voucher.password, profile, quotaBytes);
+            } catch (error) {
+                throw new Error('Payment is recorded in Manager; hotspot activation is pending and will retry automatically. ' + error.message);
+            }
+            data = readManagerData();
+            const current = data.vouchers.find((item) => item.id === voucher.id);
+            if (!current) throw new Error('Voucher was deleted while activation was in progress.');
+            current.provisioning = 'ready';
+            current.status = 'active';
+            writeManagerData(data);
+            voucher = current;
+            try { await sendVoucherSms(voucher.phone, voucher.username, voucher.password, profile); }
+            catch (error) { console.error('Voucher SMS delivery failed:', error.message); }
+        }
+        rememberPaymentAttempt(reference, true);
+        return { success: true, username: voucher.username, password: voucher.password, phone: voucher.phone, reference, profile };
+    }).finally(() => paymentJobs.delete(reference));
+    paymentJobs.set(reference, job);
+    return job;
+}
+let paymentRecoveryRunning = false;
+async function recoverPendingPayments() {
+    if (paymentRecoveryRunning) return;
+    paymentRecoveryRunning = true;
+    try {
+        const data = readManagerData();
+        // Include paid vouchers whose router provisioning was interrupted by a restart.
+        const pending = data.vouchers.filter((item) => item.provisioning === 'pending' && item.paymentReference);
+        for (const voucher of pending) {
+            if (!data.paymentAttempts.some((item) => item.reference === voucher.paymentReference)) rememberPaymentAttempt(voucher.paymentReference, false, 0);
+        }
+        const attempts = readManagerData().paymentAttempts.filter((item) => item.nextCheckAt <= Date.now()).slice(0, 5);
+        for (const attempt of attempts) {
+            rememberPaymentAttempt(attempt.reference, false, 60000);
+            try { await fulfillPayment(attempt.reference); }
+            catch (error) { console.error('Payment recovery pending:', attempt.reference, error.message); }
+        }
+    } catch (error) { console.error('Payment recovery failed:', error.message); }
+    finally { paymentRecoveryRunning = false; }
+}
 
 app.post('/api/initiate-payment', async (req, res) => {
     try {
@@ -1305,6 +1294,10 @@ app.post('/api/initiate-payment', async (req, res) => {
             });
         }
 
+        const selectedPlan = readManagerData().plans.find((item) => item.name === planName);
+        if (!selectedPlan || !Number.isFinite(Number(selectedPlan.price)) || Number(selectedPlan.price) <= 0 || Math.round(Number(amount) * 100) !== Math.round(Number(selectedPlan.price) * 100)) {
+            return res.status(400).json({ success: false, message: 'This package is unavailable or its price changed. Refresh the packages and try again.' });
+        }
         const normalizedPhone = normalizePhone(phone);
         if (!normalizedPhone) {
             return res.status(400).json({
@@ -1339,6 +1332,7 @@ app.post('/api/initiate-payment', async (req, res) => {
                         { display_name: 'Voucher Password', variable_name: 'voucher_password', value: password },
                         { display_name: 'Phone', variable_name: 'phone', value: normalizedPhone }
                     ],
+                    package_amount: Math.round(Number(selectedPlan.price) * 100),
                     plan_name: planName,
                     hotspot_profile: profile,
                     package_name: planName,
@@ -1355,8 +1349,10 @@ app.post('/api/initiate-payment', async (req, res) => {
             throw new Error(paymentData.message || 'Paystack transaction initialization failed.');
         }
 
+        rememberPaymentAttempt(paymentData.data.reference, false, 30000, { amount: Number(selectedPlan.price) });
         return res.json({
             success: true,
+            access_code: paymentData.data.access_code,
             reference: paymentData.data.reference,
             authorization_url: paymentData.data.authorization_url,
             username,
@@ -1374,98 +1370,14 @@ app.post('/api/initiate-payment', async (req, res) => {
 
 app.post('/api/payment-complete', async (req, res) => {
     try {
-        const {
-            reference,
-            planName,
-            amount,
-            phone,
-            username,
-            password
-        } = req.body || {};
+        const result = await fulfillPayment(req.body?.reference);
+        res.json(result);
+    } catch (error) { res.status(502).json({ success: false, message: error.message }); }
+});
 
-        if (!reference || !planName || !amount || !phone || !username || !password) {
-            return res.status(400).json({
-                success: false,
-                message: 'Missing payment or voucher information.'
-            });
-        }
-
-        const profile = chooseProfile(planName);
-        const quotaBytes = chooseQuotaBytes(planName);
-        if (!profile || !quotaBytes) {
-            return res.status(400).json({
-                success: false,
-                message: 'Unknown package selected.'
-            });
-        }
-
-        let transaction;
-
-        try {
-            transaction = await paystackVerify(reference);
-        } catch (error) {
-            throw new Error(`Paystack verification failed: ${error.message || error}`);
-        }
-        const paidAmount = Number(transaction.amount) / 100;
-        const expectedAmount = Number(amount);
-
-        if (transaction.status !== 'success') {
-            return res.status(400).json({
-                success: false,
-                message: 'Paystack transaction is not successful.'
-            });
-        }
-
-        if (Math.abs(paidAmount - expectedAmount) > 0.005) {
-            return res.status(400).json({
-                success: false,
-                message: 'Payment amount does not match the selected package.'
-            });
-        }
-
-        const savedVoucher = readManagerData().vouchers.find((voucher) => voucher.paymentReference === reference);
-        if (savedVoucher) {
-            return res.json({
-                success: true,
-                username: savedVoucher.username,
-                password: savedVoucher.password,
-                profile,
-                reference,
-                phone: savedVoucher.phone,
-                sms: { success: true, message: 'Voucher was already created.' }
-            });
-        }
-
-        await createMikroTikUser(username, password, profile, quotaBytes);
-
-        recordPaidVoucher({
-            reference,
-            planName,
-            amount: expectedAmount,
-            phone,
-            username,
-            password,
-            source: 'online-payment'
-        });
-
-        const smsResult = await sendVoucherSms(phone, username, password, profile);
-
-        return res.json({
-            success: true,
-            username,
-            password,
-            profile,
-            reference,
-            phone,
-            sms: smsResult
-        });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({
-            success: false,
-            message: error.message || 'Payment processing failed.'
-        });
-    }
+app.post('/api/admin/reconcile-payment', requireAdminToken, async (req, res) => {
+    try { res.json(await fulfillPayment(req.body?.reference)); }
+    catch (error) { res.status(502).json({ success: false, message: error.message }); }
 });
 
 app.post('/api/paystack/webhook', async (req, res) => {
@@ -1500,36 +1412,8 @@ app.post('/api/paystack/webhook', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Missing Paystack reference.' });
         }
 
-        const transaction = await paystackVerify(reference);
-        if (transaction.status !== 'success') {
-            return res.status(400).json({ success: false, message: 'Webhook payment was not successful.' });
-        }
-
-        const customFields = event.data?.metadata?.custom_fields || [];
-        const profileName = event.data?.metadata?.package_name || event.data?.metadata?.plan_name || customFields.find((field) => field.variable_name === 'package_name')?.value || 'Daily';
-        const profile = chooseProfile(profileName) || chooseProfile('Daily');
-        const quotaBytes = chooseQuotaBytes(profileName) || chooseQuotaBytes('Daily');
-        const username = event.data?.metadata?.voucher_username || generateVoucherUsername();
-        const password = event.data?.metadata?.voucher_password || generateVoucherPassword();
-
-        const savedVoucher = readManagerData().vouchers.find((voucher) => voucher.paymentReference === reference);
-        if (savedVoucher) {
-            return res.status(200).json({ success: true, username: savedVoucher.username, password: savedVoucher.password, profile, reference, received: true });
-        }
-
-        await createMikroTikUser(username, password, profile, quotaBytes);
-        recordPaidVoucher({
-            reference,
-            planName: profileName,
-            amount: Number(transaction.amount) / 100,
-            phone: event.data?.metadata?.phone || event.data?.customer?.phone || '',
-            username,
-            password,
-            source: 'paystack-webhook'
-        });
-        const smsResult = await sendVoucherSms(event.data?.metadata?.phone || event.data?.customer?.phone || '', username, password, profile);
-
-        return res.status(200).json({ success: true, username, password, profile, reference, sms: smsResult });
+        const result = await fulfillPayment(reference);
+        return res.status(200).json({ success: true, reference, received: true });
     } catch (error) {
         console.error(error);
         return res.status(500).json({ success: false, message: error.message || 'Webhook processing failed.' });
@@ -1542,6 +1426,8 @@ app.post('/api/paystack/webhook', async (req, res) => {
 // });
 
 app.listen(PORT, () => {
+    setTimeout(recoverPendingPayments, 1000);
+    setInterval(recoverPendingPayments, 30000);
     console.log(
         `EA-Soft payment server running on port ${PORT}`
     );

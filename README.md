@@ -83,3 +83,31 @@ corrects the recorded amount. Existing voucher records migrate automatically on
 backend reads; already-deleted records need a backup to recover. Keep manager.json
 on persistent storage and back it up before deploying updates. Dashboard exports
 include sales history; importing voucher lists does not overwrite backend finances.
+
+Hotspot payments are recorded immediately after Paystack verification, before router
+activation. Pending activations remain visible and retry automatically. The server
+also checks saved checkout references if the browser closes or a webhook is missed.
+In Settings, use Recover payment with an older Paystack reference to recover missing
+purchases without charging again. Deploy the updated hotspot/login.html to MikroTik
+as well as the backend and Manager dashboard. See hotspot/ADMIN-LOGIN-UPDATE.md.
+
+## Android fingerprint sign-in
+
+On an Android phone with an enrolled strong biometric, tick **Enable fingerprint
+sign-in on this phone** on the login screen, then sign in with your email and
+password. Approve Android's biometric prompt to save the login. On later launches,
+choose **Sign in with fingerprint**. Compatible strong face biometrics may also be
+accepted by Android's system prompt. Password login remains available.
+
+Credentials are encrypted using a per-use biometric-protected Android Keystore key
+and stored only in the app's no-backup directory. Unlocking still obtains a fresh
+session from the backend; fingerprint authentication does not bypass server login.
+The saved login is tied to the backend URL. Sign out retains the optional fingerprint
+login; **Settings ? Disable fingerprint sign-in** removes it. Account changes on this
+phone clear it. If the password changes elsewhere, sign in with the new password and
+enable fingerprint again. New biometric enrollment or a reset screen lock may require
+setup again. No backend deployment is needed for this feature.
+
+Verification: `node scripts/test-biometric-login.cjs`, `node scripts/test-admin-auth.cjs`,
+and `npm run android:build`. Physical biometric enrollment, cancellation, lockout,
+reopening the app, and disabling the feature must also be checked on the phone.

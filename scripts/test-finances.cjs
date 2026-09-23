@@ -24,7 +24,7 @@ try {
   // First login and expiry must neither move sale dates nor change income.
   run('data.vouchers[0].activatedAt = Date.now(); data.vouchers[0].expiresAt = Date.now(); data.vouchers[0].status = "expired"; writeManagerData(data);');
   assert.equal(run('data.sales[0].createdAt'), createdAt);
-  run('data.vouchers = []; writeManagerData(data); data = readManagerData();');
+  run('data.vouchers = []; writeManagerData(data, null, ["paid", "manual"]); data = readManagerData();');
   assert.equal(run('data.sales.length'), 2);
   assert.equal(run('data.sales.reduce((sum, sale) => sum + sale.amount, 0)'), 35);
 

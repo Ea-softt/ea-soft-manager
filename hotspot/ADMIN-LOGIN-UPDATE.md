@@ -16,7 +16,7 @@ Updating the dashboard or uploading MikroTik's login.html does not update this s
 4. Run `npm install` inside that backend folder.
 5. Restart the existing Node service using its current process manager (for example,
    PM2, systemd, or the hosting console). Do not start a second copy on the same port.
-6. Check `/api/health`. Its version should be `persistent-finances-2026-09-22`.
+6. Check `/api/health`. Its version should be `recovered-activation-2026-09-23`.
 7. An empty POST to `/api/admin/session` should return 401 (incorrect credentials),
    not 404. A 503 response means the initial account settings still need configuration.
 8. Sign in using the configured email and password.
@@ -46,3 +46,30 @@ not remove income or change its original reporting date. Explicit amount-paid
 corrections still update income. Previously deleted records require a backup to
 recover; the server cannot reconstruct those sales. Deploy the backend first,
 then publish the updated Manager dashboard (or rebuild the Android app).
+
+## Hotspot purchase recording
+
+Upload server.js, admin-auth.js, package.json and package-lock.json into
+/var/www/ea-soft-api, keeping .env and data intact. Run npm install and restart
+`pm2 restart ea-soft-api --update-env`. Upload the updated login.html to the
+MikroTik hotspot folder and deploy the updated Manager dashboard separately.
+
+The portal resumes the transaction initialized by the backend. Configure Paystack's
+webhook URL to your backend's /api/paystack/webhook endpoint, for example
+http://104.248.239.23/api/paystack/webhook (use HTTPS when configured).
+References initialized by this version are also persisted and checked periodically,
+so a closed browser or missed webhook does not lose the purchase. Only Paystack-
+verified successful GHS transactions with hotspot metadata create sales records.
+
+Verified purchases are saved before router activation. If MikroTik is unavailable,
+Manager displays the payment as activation pending and the server retries. Older
+missing purchases can be recovered in Manager Settings using a Paystack reference.
+Recovery verifies existing transactions; it does not charge the customer again.
+References from older checkouts lacking hotspot metadata require manual investigation.
+Keep one backend process active; use ea-soft-api, not a second copy of server.js.
+
+Recovered vouchers retain known activation and expiry timestamps. Active-session sync
+uses a saved duration or a known standard package when the Manager plan is missing.
+Detected login times are saved even if scheduling expiry on MikroTik fails; scheduling
+retries separately. When no historical login timestamp exists, the current session
+uptime supplies an observed login time, not proof of the original first login.
