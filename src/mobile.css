@@ -1,4 +1,11 @@
 .modal-backdrop { overflow-y: auto; }
+.terminal-panel { display: grid; gap: 16px; min-width: 0; }
+.terminal-panel p { margin: 0; line-height: 1.5; }
+.terminal-output { margin: 0; padding: 16px; height: min(50dvh, 480px); min-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #08271f; color: #bef4d4; border-radius: 10px; font: 13px/1.6 Consolas, monospace; }
+#terminal-form { display: grid; gap: 10px; min-width: 0; }
+#terminal-command { min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font: 16px Consolas, monospace; }
+.terminal-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.terminal-actions button:disabled { opacity: .6; cursor: wait; }
 .modal { max-height: calc(100dvh - 40px); overflow-y: auto; }
 @media (max-width: 640px) {
   .toolbar { flex-wrap: wrap; }

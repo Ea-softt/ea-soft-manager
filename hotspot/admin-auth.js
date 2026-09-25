@@ -17,6 +17,39 @@ const emailOf = (value) => typeof value === 'string' ? value.trim().toLowerCase(
 const validEmail = (value) => value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const validPassword = (value) => typeof value === 'string' && value.length >= 12 && value.length <= 256;
 
+function recoveryEmailConfigured(env) {
+    if (env.EMAIL_PROVIDER === 'sendgrid' || (!env.EMAIL_PROVIDER && env.SENDGRID_API_KEY)) {
+        return Boolean(env.SENDGRID_API_KEY?.trim() && validEmail(emailOf(env.EMAIL_FROM)));
+    }
+    return Boolean((!env.EMAIL_PROVIDER || env.EMAIL_PROVIDER === 'smtp') &&
+        env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASSWORD && env.SMTP_FROM);
+}
+
+async function deliverRecoveryEmail(env, mail, request = fetch) {
+    if (!recoveryEmailConfigured(env)) throw new Error('Recovery email is not configured.');
+    if (env.EMAIL_PROVIDER === 'sendgrid' || (!env.EMAIL_PROVIDER && env.SENDGRID_API_KEY)) {
+        const response = await request('https://api.sendgrid.com/v3/mail/send', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${env.SENDGRID_API_KEY.trim()}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                personalizations: [{ to: [{ email: mail.to }] }],
+                from: { email: emailOf(env.EMAIL_FROM), name: 'EA-Soft Manager' },
+                subject: mail.subject,
+                content: [{ type: 'text/plain', value: mail.text }]
+            }),
+            signal: AbortSignal.timeout(20000)
+        });
+        if (response.status !== 202) throw new Error(`Recovery email provider rejected the request (HTTP ${response.status}).`);
+        return;
+    }
+    // Load SMTP support only when selected; the HTTPS provider needs no extra dependency.
+    return require('nodemailer').createTransport({
+        host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), secure: Number(env.SMTP_PORT || 587) === 465,
+        requireTLS: true, auth: { user: env.SMTP_USER, pass: env.SMTP_PASSWORD },
+        connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000
+    }).sendMail({ ...mail, from: env.SMTP_FROM });
+}
+
 function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FILE || path.join(__dirname, 'data', 'admin-account.json'), sendMail, now = Date.now } = {}) {
     let account;
     function save(next) {
@@ -80,7 +113,7 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
         res.json({ success: true });
     });
     app.post('/api/admin/forgot-password', rateLimit, async (req, res) => {
-        if (!sendMail && !(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASSWORD && env.SMTP_FROM)) return res.status(503).json({ message: 'Password recovery email is not configured. Contact the administrator.' });
+        if (!sendMail && !recoveryEmailConfigured(env)) return res.status(503).json({ message: 'Password recovery email is not configured. Contact the administrator.' });
         const message = 'If that email matches your account, a reset code will arrive shortly. It expires in 15 minutes.';
         if (!account || emailOf(req.body?.email) !== account.email) return res.json({ success: true, message });
         if (reset && reset.sentAt + 60000 > now()) return res.json({ success: true, message });
@@ -88,12 +121,7 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
         const pending = { hash: digest(code), expires: now() + 15 * 60000, sentAt: now(), attempts: 0 };
         reset = pending;
         try {
-            // Email delivery is optional: a missing mail dependency must not stop login or payments.
-            const deliver = sendMail || ((mail) => require('nodemailer').createTransport({
-                host: env.SMTP_HOST, port: Number(env.SMTP_PORT || 587), secure: Number(env.SMTP_PORT || 587) === 465,
-                requireTLS: true, auth: { user: env.SMTP_USER, pass: env.SMTP_PASSWORD },
-                connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000
-            }).sendMail(mail));
+            const deliver = sendMail || ((mail) => deliverRecoveryEmail(env, mail));
             await deliver({ from: env.SMTP_FROM, to: account.email, subject: 'EA-Soft Manager password reset', text: `Your password reset code is: ${code}\n\nEnter this code in EA-Soft Manager within 15 minutes. If you did not request this, ignore this email.` });
             res.json({ success: true, message });
         } catch {
@@ -114,4 +142,4 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
     });
     return requireAdmin;
 }
-module.exports = { installAdminAuth, hashPassword };
+module.exports = { installAdminAuth, hashPassword, recoveryEmailConfigured, deliverRecoveryEmail };

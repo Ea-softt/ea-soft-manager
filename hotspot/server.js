@@ -131,6 +131,16 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
 
 const { installAdminAuth } = require('./admin-auth');
 const requireAdminToken = installAdminAuth(app);
+// An incomplete optional Terminal deployment must not take login or payments down.
+try {
+    require('./terminal').installTerminal(app, requireAdminToken);
+} catch (error) {
+    console.error('MikroTik Terminal unavailable:', error.message);
+    app.post('/api/admin/terminal', requireAdminToken, (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        res.status(503).json({ success: false, message: 'Terminal is not installed completely. Upload terminal.js, package.json and package-lock.json, run npm ci in the backend folder, then restart the backend.' });
+    });
+}
 
 function required(name) {
     if (!process.env[name]) {

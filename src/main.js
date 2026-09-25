@@ -1,4 +1,4 @@
-import { createIcons, LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown } from 'lucide';
+import { createIcons, LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } from 'lucide';
 import './style.css';
 import './mobile.css';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
@@ -69,6 +69,9 @@ let editingPlan = null;
 let editingUser = null;
 let bulkCreating = false;
 let bulkDeleting = false;
+let terminalDraft = '';
+let terminalOutput = '';
+let terminalBusy = false;
 const selectedVoucherIds = new Set();
 
 function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } })); }
@@ -76,6 +79,9 @@ persist();
 
 function signOut() {
   if (authenticated) apiRequest('/api/admin/session', { method: 'DELETE' }).catch(() => {});
+  terminalDraft = '';
+  terminalOutput = '';
+  terminalBusy = false;
   authenticated = false;
   financeAvailable = false;
   hasLoadedState = false;
@@ -274,26 +280,68 @@ function render() {
           ${navItem('users', 'Users', 'Vouchers & users')}
           ${navItem('plans', 'Tags', 'Plans & pricing')}
           ${navItem('finances', 'CalendarDays', 'Finances')}
+          ${navItem('terminal', 'Terminal', 'Terminal')}
           ${navItem('settings', 'Settings', 'Settings')}
         </nav>
         <div class="sidebar-foot"><span class="status-dot"></span> Admin workspace</div>
       </aside>
       <main class="main-content">
         <header class="topbar"><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
-  createIcons({ icons: { LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown } });
+  createIcons({ icons: { LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } });
   bindEvents();
 }
 
+function renderTerminal() {
+  return `<div class="heading-row"><div><p class="eyebrow">ROUTER MANAGEMENT</p><h1>MikroTik Terminal</h1></div></div>
+    <section class="panel terminal-panel"><p>Run a complete RouterOS command. Each command starts at the root menu in a new SSH connection. Interactive prompts and continuous commands are not supported; use a count or duration.</p>
+    <pre id="terminal-output" class="terminal-output" tabindex="0" aria-label="Terminal output">${escapeText(terminalOutput || 'Ready. Try /system resource print')}</pre>
+    <form id="terminal-form"><label for="terminal-command">RouterOS command</label><input id="terminal-command" name="command" required maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="/system resource print" value="${escapeText(terminalDraft)}" ${terminalBusy ? 'disabled' : ''} /><div class="terminal-actions"><button type="submit" class="primary-button" ${terminalBusy ? 'disabled' : ''}>${terminalBusy ? 'Running…' : 'Run command'}</button><button id="terminal-clear" class="secondary-button" type="button" ${terminalBusy ? 'disabled' : ''}>Clear output</button></div></form>
+    <p id="terminal-status" role="status">${terminalBusy ? 'Waiting for router output…' : 'Commands run with the configured router account permissions. Changes take effect immediately.'}</p></section>`;
+}
+function bindTerminal() {
+  const form = document.querySelector('#terminal-form');
+  if (!form) return;
+  const input = document.querySelector('#terminal-command');
+  input.addEventListener('input', () => { terminalDraft = input.value; });
+  document.querySelector('#terminal-clear').onclick = () => { terminalOutput = ''; render(); };
+  form.addEventListener('submit', runTerminalCommand);
+  const output = document.querySelector('#terminal-output');
+  output.scrollTop = output.scrollHeight;
+}
+async function runTerminalCommand(event) {
+  event.preventDefault();
+  if (!authenticated || terminalBusy || !terminalDraft.trim()) return;
+  const generation = authGeneration;
+  const command = terminalDraft.trim();
+  terminalBusy = true;
+  terminalOutput = `${terminalOutput}\n> ${command}\n`.slice(-300000);
+  terminalDraft = '';
+  render();
+  try {
+    const result = await apiRequest('/api/admin/terminal', { method: 'POST', body: JSON.stringify({ command }) });
+    if (generation !== authGeneration) return;
+    terminalOutput = `${terminalOutput}${result.output || ''}\n${result.message || 'Command completed.'}\n`.slice(-300000);
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    terminalOutput += `Error: ${error.message}\n`;
+  } finally {
+    if (generation === authGeneration) {
+      terminalBusy = false;
+      if (authenticated && activeView === 'terminal') { render(); document.querySelector('#terminal-command')?.focus(); }
+    }
+  }
+}
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
   if (activeView === 'users') return renderUsers();
   if (activeView === 'plans') return renderPlans();
   if (activeView === 'finances') return renderFinances();
   if (activeView === 'settings') return renderSettings();
+  if (activeView === 'terminal') return renderTerminal();
   return renderOverview(stats);
 }
 function startOfDay(date = new Date()) { const d = new Date(date); d.setHours(0, 0, 0, 0); return d.getTime(); }
@@ -381,7 +429,7 @@ function renderModal() {
   const plan = editingPlan;
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
-function bindEvents() { const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
+function bindEvents() { bindTerminal(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
 async function handleAction(action, id) { if (!authenticated) return; if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
@@ -550,11 +598,11 @@ async function refreshVoucherStatus() {
   statusRefreshRunning = true;
   try {
     if (hasRemoteApi()) await syncRemoteState();
-    if (!editingUser && !editingPlan && activeView !== 'settings' && !document.activeElement?.matches('input, select, textarea')) render();
+    if (!editingUser && !editingPlan && activeView !== 'settings' && activeView !== 'terminal' && !document.activeElement?.matches('input, select, textarea')) render();
   } catch (error) {
     syncError = error.message;
     console.error('Voucher status refresh failed:', error.message);
-    if (authenticated && !editingUser && !editingPlan) render();
+    if (authenticated && !editingUser && !editingPlan && activeView !== 'terminal') render();
   } finally {
     statusRefreshRunning = false;
   }

@@ -38,10 +38,26 @@ the backend saves the account in `hotspot/data/admin-account.json`; keep this fi
 on persistent storage and back it up privately. Future account changes use this file,
 so restarting does not restore the default password. Do not commit it or serve it publicly.
 
-For recovery email, configure `SMTP_HOST`, `SMTP_PORT` (587 or 465), `SMTP_USER`,
-`SMTP_PASSWORD`, and `SMTP_FROM` in the backend environment. Gmail requires an app
-password for SMTP. Recovery reports unavailable until email delivery is configured.
-SMTP configuration details: https://nodemailer.com/smtp
+For recovery email on DigitalOcean, use SendGrid over HTTPS. Standard SMTP ports
+are blocked on Droplets. Verify a sender in SendGrid and create an API key with
+Mail Send permission, then configure the server's private environment:
+
+```dotenv
+EMAIL_PROVIDER=sendgrid
+EMAIL_FROM=your-verified-sender@example.com
+SENDGRID_API_KEY=your-private-sendgrid-api-key
+```
+
+Upload the updated `hotspot/admin-auth.js` to `/var/www/ea-soft-api/admin-auth.js`
+and run `pm2 restart ea-soft-api --update-env`. Recovery sends codes to the current
+admin account email, which may differ from EMAIL_FROM. Do not paste API keys in chat
+or commit them. This backend-only change needs no Android rebuild. SendGrid must
+accept the account and sender before delivery works. The sender can be configured
+using https://www.twilio.com/docs/sendgrid/ui/sending-email/sender-verification.
+DigitalOcean restrictions: https://docs.digitalocean.com/products/droplets/details/limits/
+
+For other hosting environments with SMTP access, EMAIL_PROVIDER=smtp uses SMTP_HOST,
+SMTP_PORT, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM as before.
 
 The server URL is configured by the app, with no URL or token fields on the login
 screen. The default Android/local-development URL is `http://104.248.239.23/api`;
@@ -59,6 +75,41 @@ in PowerShell, then rebuild the APK.
 The app requires backend authentication before accessing the dashboard. Sessions expire after eight hours and are held only in memory. Admin passwords are hashed on the server. Browser storage and exported backups exclude session credentials. Use HTTPS on the backend to protect sign-in credentials in transit.
 
 ## Online connection
+
+### MikroTik Terminal
+
+The Manager **Terminal** tab runs single-line RouterOS commands over SSH through
+the backend. For example, run `/system resource print` or `/ip hotspot active print`.
+Each command starts a new connection at the root menu. There is no persistent shell,
+interactive confirmation, Tab completion, or live streaming. Output appears when
+the command finishes, with a 20-second timeout and 256 KiB output limit. Use bounded
+commands such as `/ping 1.1.1.1 count=4`. A timeout or disconnect does not undo changes;
+check the router before retrying. Terminal history is held in memory and cleared on sign-out.
+
+Deploy `hotspot/terminal.js`, the updated `hotspot/server.js`, `hotspot/package.json`,
+and `hotspot/package-lock.json` together. Run `npm ci` in the backend directory and
+restart the server. Rebuild the web app or Android APK for the new Terminal tab.
+On the backend, configure:
+
+```dotenv
+MIKROTIK_SSH_PORT=22
+MIKROTIK_SSH_HOST_SHA256=<trusted router SSH host key SHA256 fingerprint as 64 hex characters>
+# Optional separate account (defaults to MIKROTIK_USERNAME / MIKROTIK_PASSWORD):
+MIKROTIK_SSH_USERNAME=
+MIKROTIK_SSH_PASSWORD=
+```
+
+SSH connects to the existing `MIKROTIK_HOST`. Enable the router SSH service and allow
+the backend to reach it over the private network. The selected router account must
+have SSH permission and the permissions needed for the commands you run.
+Obtain its host public key through a trusted administrator or verified SSH connection.
+The fingerprint is SHA256 of the decoded SSH public-key blob, in hexadecimal
+(not the usual `SHA256:` Base64 display). Verify any scanned key independently before
+configuring it. Missing or mismatched fingerprints block terminal connections.
+
+Implementation references: [MikroTik SSH](https://manual.mikrotik.com/docs/management-tools/ssh/)
+and [ssh2 client API](https://github.com/mscdex/ssh2). Local verification:
+`node scripts/test-terminal.cjs`, `node scripts/test-admin-auth.cjs`, and `npm run build`.
 
 Use one backend for both clients:
 

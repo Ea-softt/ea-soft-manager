@@ -7,6 +7,7 @@ Updating the dashboard or uploading MikroTik's login.html does not update this s
 2. Upload these files into the existing Node backend folder:
    - server.js
    - admin-auth.js
+   - terminal.js
    - package.json
    - package-lock.json
 3. Keep the server's existing .env and data directory. Add ADMIN_EMAIL and
@@ -29,6 +30,24 @@ The update archive deliberately excludes .env, account data, and payment/voucher
 
 ## If Nginx returns 502 Bad Gateway
 
+After the Terminal update, missing `terminal.js` or the `ssh2` dependency can cause
+older server.js versions to crash during startup. The latest server.js isolates
+Terminal startup failures so login and payments remain available. Upload server.js,
+terminal.js, package.json and package-lock.json together to `/var/www/ea-soft-api`,
+preserving `.env` and `data`, then run:
+
+```sh
+cd /var/www/ea-soft-api
+npm ci
+pm2 restart ea-soft-api --update-env
+pm2 logs ea-soft-api --lines 40 --nostream
+curl -i http://127.0.0.1:3000/api/health
+```
+
+Use the backend's configured PORT if it is not 3000. Confirm the public
+`http://104.248.239.23/api/health` also responds successfully. SSH settings are only
+required for Terminal commands; they are not required for Manager sign-in.
+
 The Node backend is unavailable to Nginx. Inspect the backend's startup log before
 changing proxy or CORS settings. With PM2, run `pm2 list` followed by
 `pm2 logs --lines 40 --nostream`. Check for missing files or modules, file permission
@@ -49,7 +68,7 @@ then publish the updated Manager dashboard (or rebuild the Android app).
 
 ## Hotspot purchase recording
 
-Upload server.js, admin-auth.js, package.json and package-lock.json into
+Upload server.js, admin-auth.js, terminal.js, package.json and package-lock.json into
 /var/www/ea-soft-api, keeping .env and data intact. Run npm install and restart
 `pm2 restart ea-soft-api --update-env`. Upload the updated login.html to the
 MikroTik hotspot folder and deploy the updated Manager dashboard separately.
@@ -73,3 +92,11 @@ uses a saved duration or a known standard package when the Manager plan is missi
 Detected login times are saved even if scheduling expiry on MikroTik fails; scheduling
 retries separately. When no historical login timestamp exists, the current session
 uptime supplies an observed login time, not proof of the original first login.
+
+## Recovery email on DigitalOcean
+
+Upload the latest admin-auth.js. Add EMAIL_PROVIDER=sendgrid, EMAIL_FROM (a sender
+verified in SendGrid), and SENDGRID_API_KEY (with Mail Send permission) to the private
+server .env. Restart ea-soft-api with --update-env, then request a reset code in the
+Manager. SendGrid uses HTTPS; standard SMTP ports are blocked on DigitalOcean.
+Never replace your existing .env with a sample file. No app rebuild is needed.
