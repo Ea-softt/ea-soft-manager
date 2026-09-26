@@ -162,12 +162,25 @@ function getMikroTikApiOptions() {
     };
 }
 
+const initializingVoucherUsernames = new Set();
+
 function generateVoucherUsername() {
-    return 'EA-' + Math.floor(100000 + Math.random() * 900000);
+    const data = readManagerData();
+    const used = new Set([
+        ...data.vouchers.map((voucher) => String(voucher.username)),
+        ...data.paymentAttempts.map((attempt) => String(attempt.username)),
+        ...initializingVoucherUsernames
+    ]);
+    const available = Array.from({ length: 900 }, (_, index) => String(100 + index))
+        .filter((username) => !used.has(username));
+    if (!available.length) {
+        throw new Error('All three-digit voucher codes (100–999) are in use. Please contact support.');
+    }
+    return available[crypto.randomInt(available.length)];
 }
 
 function generateVoucherPassword() {
-    return Math.random().toString(36).substring(2, 8).toUpperCase();
+    return String(crypto.randomInt(100, 1000));
 }
 
 async function paystackVerify(reference) {
@@ -1288,6 +1301,7 @@ async function recoverPendingPayments() {
 }
 
 app.post('/api/initiate-payment', async (req, res) => {
+    let reservedUsername;
     try {
         const {
             planName,
@@ -1325,6 +1339,8 @@ app.post('/api/initiate-payment', async (req, res) => {
         }
 
         const username = generateVoucherUsername();
+        reservedUsername = username;
+        initializingVoucherUsernames.add(username);
         const password = generateVoucherPassword();
         const reference = `EA-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
         const secretKey = required('PAYSTACK_SECRET_KEY');
@@ -1367,7 +1383,7 @@ app.post('/api/initiate-payment', async (req, res) => {
             throw new Error(paymentData.message || 'Paystack transaction initialization failed.');
         }
 
-        rememberPaymentAttempt(paymentData.data.reference, false, 30000, { amount: Number(selectedPlan.price) });
+        rememberPaymentAttempt(paymentData.data.reference, false, 30000, { amount: Number(selectedPlan.price), username });
         return res.json({
             success: true,
             access_code: paymentData.data.access_code,
@@ -1383,6 +1399,8 @@ app.post('/api/initiate-payment', async (req, res) => {
             success: false,
             message: error.message || 'Payment initiation failed.'
         });
+    } finally {
+        if (reservedUsername) initializingVoucherUsernames.delete(reservedUsername);
     }
 });
 

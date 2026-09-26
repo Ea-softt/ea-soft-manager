@@ -334,11 +334,11 @@
         }
 
         function generateVoucherUsername() {
-            return 'EA-' + Math.floor(100000 + Math.random() * 900000);
+            return String(Math.floor(100 + Math.random() * 900));
         }
 
         function generateVoucherPassword() {
-            return Math.random().toString(36).substring(2, 8).toUpperCase();
+            return String(Math.floor(100 + Math.random() * 900));
         }
 
         async function createPaystackTransaction(planName, amount, phone) {

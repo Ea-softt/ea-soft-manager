@@ -14,8 +14,13 @@ async function main() {
   let sms = 0;
   const routerUsers = [];
   let status = 'success';
+  let clock = Date.now();
+  let sessions = [];
+  const scheduled = [];
+  const disabled = [];
   const context = vm.createContext({ fs, path, crypto, DATA_FILE: file,
-    defaultPlans: [{ id: 'daily', name: 'Daily', price: 5, dataLimit: 11 }],
+    Date: class extends Date { static now() { return clock; } },
+    defaultPlans: [{ id: 'daily', name: 'Daily', price: 5, dataLimit: 11, duration: 1, period: 'days' }],
     console: { error() {} },
     chooseProfile: (name) => name === 'Daily' ? 'DAILY' : null,
     chooseQuotaBytes: (name) => name === 'Daily' ? 11811160064 : null,
@@ -23,6 +28,10 @@ async function main() {
       paid_at: '2026-09-20T12:00:00Z', metadata: { package_name: 'Daily', voucher_username: 'EA-' + reference,
         voucher_password: 'abcdef', phone: '+233241234567', package_amount: 500 } }),
     readMikroTikHotspotUsers: async () => { if (offline) throw new Error('Router offline'); return routerUsers; },
+    readMikroTikHotspotActiveUsers: async () => sessions,
+    profileNameForPlan: () => 'DAILY',
+    scheduleCalendarExpiration: async (username, expiresAt) => { scheduled.push({ username, expiresAt }); },
+    disableMikroTikUser: async (username) => { disabled.push(username); },
     createMikroTikUser: async (name, password, profile) => { additions++; routerUsers.push({ name, password, profile }); },
     sendVoucherSms: async () => { sms++; }
   });
@@ -31,6 +40,8 @@ async function main() {
   run(source.slice(source.indexOf('function preserveSales('), source.indexOf('const { installAdminAuth }')));
   run(source.slice(source.indexOf('\nfunction recordPaidVoucher({'), source.indexOf("app.get('/api/health'")));
   run(source.slice(source.indexOf('const paymentJobs ='), source.indexOf("app.post('/api/initiate-payment'")));
+  run(source.slice(source.indexOf('function parseRouterOsDuration('), source.indexOf('function planDurationMs(')));
+  run(source.slice(source.indexOf('let calendarSyncRunning'), source.indexOf('function mergeMikroTikUsers(')));
   try {
     status = 'pending';
     await assert.rejects(run("fulfillPayment('first')"), /not completed/);
@@ -81,7 +92,49 @@ async function main() {
     assert.equal(run("readManagerData().vouchers.find((item) => item.id === 'router-import').activatedAt"), 1000);
     assert.equal(run("readManagerData().vouchers.find((item) => item.id === 'router-import').expiresAt"), 2000);
     assert.equal(additions, 3);
-    console.log('Hotspot payment checks passed: verified recording, router outage, retries, duplicate callbacks, deletion replay, stale sync, hosted recovery, imported accounts.');
+
+    // Follow an actual payment-created voucher through first login and expiry.
+    const getPurchased = () => run("readManagerData().vouchers.find((item) => item.paymentReference === 'first')");
+    assert.equal(getPurchased().source, 'online-payment');
+    assert.equal(getPurchased().durationMs, 86400000);
+    assert.equal(getPurchased().activatedAt, null);
+    assert.equal(getPurchased().expiresAt, null);
+    await run('syncCalendarActivations()');
+    assert.equal(getPurchased().expiresAt, null, 'payment alone must not start validity');
+
+    sessions = [{ user: 'EA-first', uptime: '2h' }];
+    await run('syncCalendarActivations()');
+    const activatedAt = clock - 2 * 3600000;
+    const expiresAt = activatedAt + 86400000;
+    assert.equal(getPurchased().activatedAt, activatedAt);
+    assert.equal(getPurchased().expiresAt, expiresAt);
+    assert.equal(getPurchased().status, 'active');
+    assert.ok(scheduled.some((item) => item.username === 'EA-first' && item.expiresAt === expiresAt));
+
+    clock += 3600000;
+    sessions = [{ user: 'EA-first', uptime: '1m' }];
+    await run("fulfillPayment('first')");
+    await run('syncCalendarActivations()');
+    assert.equal(getPurchased().expiresAt, expiresAt, 'reconnect and repeated payment callback must preserve expiry');
+
+    // Expiry continues while the buyer is offline and is exposed to Manager.
+    sessions = [];
+    clock = expiresAt + 1;
+    await run('syncCalendarActivations()');
+    assert.equal(getPurchased().status, 'expired');
+    assert.ok(disabled.includes('EA-first'));
+    let stateHandler;
+    context.app = { get: (_path, _auth, handler) => { stateHandler = handler; } };
+    context.requireAdminToken = () => {};
+    run(source.slice(source.indexOf('function mergeMikroTikUsers('), source.indexOf('function chooseQuotaBytes(')));
+    const routeStart = source.indexOf("\napp.get('/api/admin/state', requireAdminToken, async");
+    run(source.slice(routeStart, source.indexOf("app.get('/api/public/plans'", routeStart)));
+    let response;
+    await stateHandler({}, { json: (body) => { response = body; } });
+    const customer = response.users.find((item) => item.paymentReference === 'first');
+    assert.equal(customer.expiresAt, expiresAt);
+    assert.equal(customer.status, 'expired');
+    console.log('Hotspot payment checks passed: recovery, duplicate callbacks, first-login validity, reconnect, offline expiry, router disable, and Manager expiry response.');
   } finally {
     if (fs.existsSync(file)) fs.unlinkSync(file);
     fs.rmdirSync(directory);
