@@ -462,16 +462,16 @@ function voucherRandomNumber(limit) {
   return randomValue[0] % limit;
 }
 function generateShortVoucherCredentials() {
-  const existingUsernames = new Set(state.users.map((user) => user.username));
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
-    const username = 'EA-' + (100000 + voucherRandomNumber(900000));
-    if (!existingUsernames.has(username)) {
-      const password = Array.from({ length: 6 }, () => alphabet[voucherRandomNumber(alphabet.length)]).join('');
-      return { username, password };
-    }
+  const existingUsernames = new Set(state.users.map((user) => String(user.username)));
+  const availableUsernames = Array.from({ length: 900 }, (_, index) => String(100 + index))
+    .filter((username) => !existingUsernames.has(username));
+  if (!availableUsernames.length) {
+    throw new Error('All three-digit voucher codes (100–999) are in use. Delete unused vouchers before creating more.');
   }
-  throw new Error('Could not generate an unused voucher code. Sync the backend and try again.');
+  return {
+    username: availableUsernames[voucherRandomNumber(availableUsernames.length)],
+    password: String(100 + voucherRandomNumber(900))
+  };
 }
 async function downloadVoucherCsv(users, plan) {
   const escapeCell = (value) => '"' + String(value ?? '').replace(/"/g, '""') + '"';

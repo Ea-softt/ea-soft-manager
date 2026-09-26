@@ -825,8 +825,14 @@ function activationDuration(voucher, plans) {
     return plan ? planDurationMs(plan) : 0;
 }
 async function syncCalendarActivations() {
-    if (calendarSyncRunning) return;
-    calendarSyncRunning = true;
+    // A state refresh must also check users imported while an earlier sync was running.
+    while (calendarSyncRunning) await calendarSyncRunning;
+    calendarSyncRunning = performCalendarActivationSync();
+    try { await calendarSyncRunning; }
+    finally { calendarSyncRunning = false; }
+}
+
+async function performCalendarActivationSync() {
     try {
         const activeUsers = await readMikroTikHotspotActiveUsers();
         // Read after the network call so newly recovered purchases are included.
@@ -875,8 +881,10 @@ async function syncCalendarActivations() {
                 }
             } catch (error) { console.error('Expiry scheduling will retry:', voucher.username, error.message); }
         }
-    } catch (error) { console.error('Calendar activation sync failed:', error.message); }
-    finally { calendarSyncRunning = false; }
+    } catch (error) {
+        console.error('Calendar activation sync failed:', error.message);
+        throw error;
+    }
 }
 
 function mergeMikroTikUsers(data, mikrotikUsers) {
@@ -1045,12 +1053,12 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/admin/state', requireAdminToken, async (req, res) => {
     let warning = '';
-    try { await syncCalendarActivations(); }
-    catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try {
         const routerUsers = await readMikroTikHotspotUsers();
         mergeMikroTikUsers(readManagerData(), routerUsers);
     } catch { warning = 'Router sync is unavailable. Showing saved records.'; }
+    try { await syncCalendarActivations(); }
+    catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try {
         const data = readManagerData();
         res.json({ success: true, plans: data.plans, users: data.vouchers, sales: data.sales, warning });
