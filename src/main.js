@@ -76,6 +76,8 @@ let activeView = 'overview';
 let searchTerm = '';
 let statusFilter = 'all';
 let financeRange = 'daily';
+let usageRange = 'daily';
+let dataUsage = null;
 let editingPlan = null;
 let editingUser = null;
 let bulkCreating = false;
@@ -282,6 +284,7 @@ async function syncRemoteState() {
     townSummaries = result.towns;
     townsComplete = result.complete;
     state.sales = result.sales;
+    dataUsage = result.complete ? result.dataUsage : null;
     state.users = [];
     state.plans = [];
     financeAvailable = result.complete;
@@ -294,6 +297,7 @@ async function syncRemoteState() {
   if (bulkCreating || bulkDeleting) return;
   if (!Array.isArray(remote.plans) || !Array.isArray(remote.users)) throw new Error('The backend returned an invalid workspace response.');
   financeAvailable = Array.isArray(remote.sales);
+  dataUsage = remote.dataUsage || null;
   if (financeAvailable) state.sales = remote.sales;
   hasLoadedState = true;
   syncError = remote.warning || '';
@@ -351,6 +355,7 @@ function render() {
           ${navItem('users', 'Users', 'Vouchers & users')}
           ${navItem('plans', 'Tags', 'Plans & pricing')}
           ${navItem('finances', 'CalendarDays', 'Finances')}
+          ${navItem('consumption', 'Database', 'Data consumption')}
           ${navItem('terminal', 'Terminal', 'Terminal')}
           ${navItem('settings', 'Settings', 'Settings')}
         </nav>
@@ -409,6 +414,7 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (activeView === 'consumption') return renderDataConsumption();
   if (selectedTown === 'all') {
     if (activeView === 'finances' && townsComplete) return renderFinances();
     if (activeView === 'settings') return renderSettings();
@@ -443,6 +449,50 @@ function financeBuckets(range) {
 }
 function financeRangeTab(range, label) { return `<button class="${financeRange === range ? 'primary-button' : 'secondary-button'}" data-action="finance-range" data-id="${range}">${label}</button>`; }
 function escapeText(value) { return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char])); }
+function usagePeriodStart(range, value = Date.now()) {
+  const date = new Date(value);
+  date.setUTCHours(0, 0, 0, 0);
+  if (range === 'weekly') date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+  if (range === 'monthly') date.setUTCDate(1);
+  if (range === 'yearly') date.setUTCMonth(0, 1);
+  return date;
+}
+function moveUsagePeriod(date, range, offset) {
+  const result = new Date(date);
+  if (range === 'yearly') result.setUTCFullYear(result.getUTCFullYear() + offset);
+  else if (range === 'monthly') result.setUTCMonth(result.getUTCMonth() + offset);
+  else result.setUTCDate(result.getUTCDate() + offset * (range === 'weekly' ? 7 : 1));
+  return result;
+}
+function usageTotal(from, to) {
+  return dataUsage.days.reduce((total, day) => {
+    const timestamp = Date.parse(`${day.date}T00:00:00Z`);
+    return total + (timestamp >= from && timestamp < to ? day.bytes : 0);
+  }, 0);
+}
+function renderDataConsumption() {
+  if (!dataUsage || !Array.isArray(dataUsage.days)) return '<section class="panel"><h1>Data consumption unavailable</h1><p>Update the backend and refresh to load usage history. All town records must be available for combined totals.</p><button class="secondary-button" data-action="sync">Refresh</button></section>';
+  const periods = [['daily', 'Daily', 'Today'], ['weekly', 'Weekly', 'This week'], ['monthly', 'Monthly', 'This month'], ['yearly', 'Yearly', 'This year']];
+  const colors = ['mint', 'sun', 'sky', 'coral'];
+  const start = usagePeriodStart(usageRange);
+  const count = { daily: 7, weekly: 8, monthly: 12, yearly: 5 }[usageRange];
+  const buckets = Array.from({ length: count }, (_, index) => {
+    const from = moveUsagePeriod(start, usageRange, index - count + 1);
+    const to = moveUsagePeriod(from, usageRange, 1);
+    const options = usageRange === 'yearly' ? { year: 'numeric' } : usageRange === 'monthly' ? { month: 'long', year: 'numeric' } : { day: 'numeric', month: 'short', year: 'numeric' };
+    const label = `${usageRange === 'weekly' ? 'Week of ' : ''}${new Intl.DateTimeFormat('en-GH', { ...options, timeZone: 'UTC' }).format(from)}`;
+    return { from, to, label, bytes: usageTotal(from, to) };
+  });
+  const coverageStart = dataUsage.coverageStartedAt || dataUsage.startedAt;
+  const display = (from, to, bytes) => to <= dataUsage.startedAt ? 'Not tracked' : `${formatDataUsage(bytes)}${from < coverageStart ? ' (partial)' : ''}`;
+  return `<div class="heading-row"><div><p class="eyebrow">USAGE STATISTICS</p><h1>Data consumption</h1><p class="subhead">Upload + download, recorded in UTC. Weeks start on Monday.</p></div><button class="secondary-button" data-action="sync">Refresh</button></div>
+    <div class="stat-grid">${periods.map(([range, , label], index) => {
+      const from = usagePeriodStart(range); const to = moveUsagePeriod(from, range, 1);
+      return `<div class="stat-card ${colors[index]}"><span class="stat-icon">${icon('Database')}</span><p>${label}</p><strong>${formatDataUsage(usageTotal(from, to))}</strong><small>${from < coverageStart ? 'Partial tracking period' : 'Recorded consumption'}</small></div>`;
+    }).join('')}</div>
+    <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Consumption by period</h2></div><div class="toolbar">${periods.map(([range, label]) => `<button class="${usageRange === range ? 'primary-button' : 'secondary-button'}" data-action="usage-range" data-id="${range}" aria-pressed="${usageRange === range}">${label}</button>`).join('')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Data consumed</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${display(bucket.from, bucket.to, bucket.bytes)}</td></tr>`).join('')}</tbody></table></div></section>
+    <p class="subhead">Tracking since ${escapeText(new Date(dataUsage.startedAt).toISOString().slice(0, 10))}. Earlier usage cannot be reconstructed. Usage is assigned to the day it is reported; gaps in router reporting can shift totals. Recorded totals survive voucher deletion. ${sharedVoucherMode ? 'Town totals follow the town where the voucher was issued.' : 'The first router reading establishes a baseline.'} Units use 1024 bytes per KB.</p>`;
+}
 function renderFinances() {
   if (!financeAvailable) return '<section class="panel"><h1>Finance history unavailable</h1><p>Install the finance update on the backend to load permanent sales records. No zero balances are being reported.</p></section>';
   const now = new Date();
@@ -463,13 +513,24 @@ function renderOverview({ activeUsers, revenue, expiring }) {
     <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers}</strong><small>Currently valid</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small>All recorded sales</small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
     <div class="content-grid"><section class="panel wide-panel"><div class="panel-head"><div><p class="eyebrow">LATEST ACTIVITY</p><h2>Recent vouchers</h2></div><button class="text-button" data-view="users">View all ${icon('ChevronDown')}</button></div>${userTable(recent)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR CATALOG</p><h2>Plans</h2></div><button class="icon-button small" data-action="new-plan">${icon('Plus')}</button></div><div class="mini-plans">${state.plans.slice(0, 5).map(planMini).join('')}</div></section></div>`;
 }
+function voucherDisplayStatus(user) {
+  if (user.status === 'expired' || (user.expiresAt != null && user.expiresAt <= Date.now())) return 'expired';
+  if (user.provisioning === 'pending') return 'pending';
+  if (!user.activatedAt && !user.expiresAt) return 'awaiting';
+  return 'active';
+}
+function voucherStatusBadge(user) {
+  const status = voucherDisplayStatus(user);
+  const labels = { active: 'Active', expired: 'Expired', awaiting: 'Awaiting first login', pending: 'Paid — activation pending' };
+  return `<span class="pill ${status}">${labels[status]}</span>`;
+}
 function renderUsers() {
-  const filtered = state.users.filter((user) => `${user.username} ${user.phone} ${getPlan(user.planId)?.name || ''}`.toLowerCase().includes(searchTerm.toLowerCase()) && (statusFilter === 'all' || user.status === statusFilter));
-  return `<div class="heading-row"><div><p class="eyebrow">CUSTOMER LEDGER</p><h1>Vouchers & users</h1><p class="subhead">Every credential, payment, limit, and expiry in one place.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div><div class="toolbar"><label class="search-box">${icon('Search')}<input id="user-search" value="${searchTerm}" placeholder="Search username, phone, or plan" /></label><select id="status-filter"><option value="all" ${statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="active" ${statusFilter === 'active' ? 'selected' : ''}>Active</option><option value="expired" ${statusFilter === 'expired' ? 'selected' : ''}>Expired</option></select><button class="secondary-button" data-action="bulk-users">${icon('Plus')} Bulk vouchers</button><button class="secondary-button" data-action="bulk-delete" ${selectedVoucherIds.size && !bulkDeleting ? '' : 'disabled'}>${icon('Trash2')} ${bulkDeleting ? 'Deleting…' : 'Delete selected (' + selectedVoucherIds.size + ')'}</button><button class="secondary-button" data-action="export">${icon('Download')} Export</button></div><section class="panel table-panel">${userTable(filtered, true)}</section>`;
+  const filtered = state.users.filter((user) => `${user.username} ${user.phone} ${getPlan(user.planId)?.name || ''}`.toLowerCase().includes(searchTerm.toLowerCase()) && (statusFilter === 'all' || voucherDisplayStatus(user) === statusFilter));
+  return `<div class="heading-row"><div><p class="eyebrow">CUSTOMER LEDGER</p><h1>Vouchers & users</h1><p class="subhead">Every credential, payment, limit, and expiry in one place.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div><div class="toolbar"><label class="search-box">${icon('Search')}<input id="user-search" value="${searchTerm}" placeholder="Search username, phone, or plan" /></label><select id="status-filter"><option value="all" ${statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="awaiting" ${statusFilter === 'awaiting' ? 'selected' : ''}>Awaiting first login</option><option value="active" ${statusFilter === 'active' ? 'selected' : ''}>Active</option><option value="expired" ${statusFilter === 'expired' ? 'selected' : ''}>Expired</option></select><button class="secondary-button" data-action="bulk-users">${icon('Plus')} Bulk vouchers</button><button class="secondary-button" data-action="bulk-delete" ${selectedVoucherIds.size && !bulkDeleting ? '' : 'disabled'}>${icon('Trash2')} ${bulkDeleting ? 'Deleting…' : 'Delete selected (' + selectedVoucherIds.size + ')'}</button><button class="secondary-button" data-action="export">${icon('Download')} Export</button></div><section class="panel table-panel">${userTable(filtered, true)}</section>`;
 }
 function userTable(users, full = false) {
   if (!users.length) return '<div class="empty-state">No voucher records match this view.</div>';
-  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Data consumed</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td>${dataUsageCell(user)}<td>${money(user.amount)}</td><td>${user.activatedAt && !user.expiresAt ? 'Active ? expiry unavailable' : formatDate(user.expiresAt)}</td><td><span class="pill ${user.status}">${user.provisioning === 'pending' ? 'Paid ? activation pending' : user.status === 'active' ? 'Active' : 'Expired'}</span></td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Data consumed</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td>${dataUsageCell(user)}<td>${money(user.amount)}</td><td>${user.activatedAt && !user.expiresAt ? 'Active ? expiry unavailable' : formatDate(user.expiresAt)}</td><td>${voucherStatusBadge(user)}</td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function planMini(plan) { return `<div class="mini-plan"><span class="plan-color ${plan.color}"></span><div><strong>${plan.name}</strong><small>${plan.dataLimit} GB · ${plan.duration} ${plan.period}</small></div><b>${money(plan.price)}</b></div>`; }
 function renderPlans() { return `<div class="heading-row"><div><p class="eyebrow">PRODUCT CATALOG</p><h1>Plans & pricing</h1><p class="subhead">Change price, data limit, and time limit without touching the hotspot portal.</p></div><button class="primary-button" data-action="new-plan">${icon('Plus')} Add plan</button></div><div class="plan-grid">${state.plans.map((plan) => `<article class="plan-card ${plan.color}"><div class="plan-card-top"><span class="plan-color"></span><div class="row-actions"><button class="icon-button small" data-action="edit-plan" data-id="${plan.id}" title="Edit plan">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-plan" data-id="${plan.id}" title="Delete plan">${icon('Trash2', 16)}</button></div></div><h2>${plan.name}</h2><p class="plan-price">${money(plan.price)}</p><div class="plan-meta"><span>${icon('Database', 15)} ${plan.dataLimit} GB</span><span>${icon('Clock3', 15)} ${plan.duration} ${plan.period}</span><span>Shared: ${plan.sharedUsers || 1}</span><span>${plan.rateLimit || 'No rate limit'}</span></div></article>`).join('')}</div>`; }
@@ -584,7 +645,7 @@ function renderModal() {
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
 function bindEvents() { document.querySelector('#town-select')?.addEventListener('change', (event) => { const id = event.target.value; event.target.value = selectedTown; switchTown(id); }); document.querySelectorAll('[data-town]').forEach((el) => el.onclick = () => switchTown(el.dataset.town)); bindTerminal(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
-async function handleAction(action, id) { if (!authenticated) return; if (selectedTown === 'all' && !['sign-out', 'sync', 'finance-range', 'save-settings', 'disable-fingerprint'].includes(action)) { alert('Select a town first.'); return; } if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
+async function handleAction(action, id) { if (!authenticated) return; if (selectedTown === 'all' && !['sign-out', 'sync', 'finance-range', 'usage-range', 'save-settings', 'disable-fingerprint'].includes(action)) { alert('Select a town first.'); return; } if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'usage-range') usageRange = id; if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
 async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH\u20b5'; persist(); }
@@ -639,9 +700,10 @@ async function switchTown(id) {
   selectedTown = id;
   hasLoadedState = false;
   financeAvailable = false;
+  dataUsage = null;
   townsComplete = false;
   townSummaries = [];
-  state.users = []; state.plans = []; state.sales = [];
+  state.users = []; state.plans = []; state.sales = []; dataUsage = null;
   terminalDraft = ''; terminalOutput = '';
   searchTerm = ''; statusFilter = 'all';
   selectedVoucherIds.clear();

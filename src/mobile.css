@@ -8,6 +8,8 @@
 .terminal-actions button:disabled { opacity: .6; cursor: wait; }
 .modal { max-height: calc(100dvh - 40px); overflow-y: auto; }
 @media (max-width: 640px) {
+  .nav-list { overflow-x: auto; justify-content: flex-start; }
+  .nav-item { flex: 0 0 76px; min-height: 48px; }
   .toolbar { flex-wrap: wrap; }
   .toolbar .secondary-button { min-height: 44px; }
   .sidebar { height: calc(66px + env(safe-area-inset-bottom)); padding-bottom: calc(7px + env(safe-area-inset-bottom)); }

@@ -8,7 +8,7 @@ New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
 $files = @(
     'server.js', 'admin-auth.js', 'terminal.js', 'towns.js', 'shared-vouchers.js',
     'package.json', 'package-lock.json', 'towns.example.json',
-    'MULTI-TOWN.md', 'SHARED-VOUCHERS.md',
+    'MULTI-TOWN.md', 'SHARED-VOUCHERS.md', 'DATA-CONSUMPTION.md',
     'radius/ea-rest.conf', 'radius/ea-hotspot.conf', 'radius/clients.example.conf'
 )
 foreach ($relative in $files) {

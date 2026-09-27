@@ -5,3 +5,5 @@
 .town-picker{display:flex;align-items:center;gap:10px;margin-right:auto;font:700 13px Arial;color:var(--ink)}.town-picker select{max-width:240px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fffdf7;color:var(--ink)}
 .town-settings{margin-top:24px}.town-settings fieldset{border:0;margin:0;padding:0;display:grid;gap:16px;min-width:0}.town-settings h3{margin:0}.town-settings details{display:grid;gap:12px}.town-settings details label{margin-top:12px}.town-settings summary{cursor:pointer}.town-settings-list{display:grid;gap:12px}.town-settings-list article{padding:12px;border:1px solid var(--line);border-radius:8px}.town-settings-list small{display:block;overflow-wrap:anywhere;margin-top:5px;color:var(--muted)}.town-settings input{min-width:0;width:100%;box-sizing:border-box}
 @media(max-width:640px){.topbar .mobile-brand{display:none}.town-picker{gap:5px}.town-picker select{max-width:155px}}
+
+.pill.awaiting{background:#fff0bb;color:#795600}.pill.pending{background:#dff1fc;color:#245c7a}

@@ -43,7 +43,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'x-paystack-signature', 'Authorization']
 }));
 
-const BACKEND_VERSION = 'town-settings-2026-09-27';
+const BACKEND_VERSION = 'data-consumption-2026-09-27';
 const DATA_FILE = env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
@@ -77,13 +77,14 @@ function readManagerData() {
     try { data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
     catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        return { plans: defaultPlans, vouchers: [], sales: [], paymentAttempts: [], deletedVoucherIds: [] };
+        return { plans: defaultPlans, vouchers: [], sales: [], paymentAttempts: [], deletedVoucherIds: [], dataUsage: { startedAt: Date.now(), days: [] } };
     }
     const vouchers = Array.isArray(data.vouchers) ? data.vouchers : [];
     const sales = preserveSales(Array.isArray(data.sales) ? data.sales : [], vouchers);
     const result = { plans: Array.isArray(data.plans) ? data.plans : defaultPlans, vouchers, sales, deletedVoucherIds: Array.isArray(data.deletedVoucherIds) ? data.deletedVoucherIds : [], paymentAttempts: Array.isArray(data.paymentAttempts) ? data.paymentAttempts : [] };
+    result.dataUsage = data.dataUsage || { startedAt: Date.now(), days: [] };
     // Persist migration before a delete or status update can change the voucher list.
-    if (!Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
+    if (!data.dataUsage || !Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
     return result;
 }
 function saveManagerData(data) {
@@ -91,14 +92,30 @@ function saveManagerData(data) {
     fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(data, null, 2));
     fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
 }
+function recordDataUsage(history, bytes, observedAt) {
+    if (!Number.isSafeInteger(bytes) || bytes <= 0) return;
+    const date = new Date(observedAt).toISOString().slice(0, 10);
+    let day = history.days.find((item) => item.date === date);
+    if (!day) { day = { date, bytes: 0 }; history.days.push(day); }
+    day.bytes += bytes;
+}
 function writeManagerData(data, correctedVoucher = null, deletedIds = [], updatePlans = false) {
     // Async router operations may hold old snapshots. Always retain the latest sales.
     const latest = readManagerData();
+    data.dataUsage = latest.dataUsage;
     if (!updatePlans) data.plans = latest.plans;
     const latestVouchers = new Map(latest.vouchers.map((item) => [item.id, item]));
     data.vouchers = data.vouchers.map((item) => {
         const current = latestVouchers.get(item.id);
         if (!current) return item;
+        if (!current.radiusSessions && item.dataUsageUpdatedAt > (current.dataUsageUpdatedAt || 0)) {
+            if (current.dataUsageUpdatedAt >= data.dataUsage.startedAt && Number.isSafeInteger(current.dataConsumedBytes)) {
+                const delta = item.dataConsumedBytes >= current.dataConsumedBytes ? item.dataConsumedBytes - current.dataConsumedBytes : item.dataConsumedBytes;
+                recordDataUsage(data.dataUsage, delta, item.dataUsageUpdatedAt);
+            }
+        } else if (!current.radiusSessions && current.dataUsageUpdatedAt) {
+            item = { ...item, dataConsumedBytes: current.dataConsumedBytes, dataUsageUpdatedAt: current.dataUsageUpdatedAt };
+        }
         if (current.radiusSessions) item = { ...item, radiusSessions: current.radiusSessions, dataConsumedBytes: current.dataConsumedBytes, dataUsageUpdatedAt: current.dataUsageUpdatedAt, lastTownId: current.lastTownId, radiusRevoked: current.radiusRevoked };
         if (current.radiusRevoked) item = { ...item, radiusRevoked: true, status: 'expired' };
         if (current.activatedAt && !item.activatedAt) item = { ...item, activatedAt: current.activatedAt, activationSource: current.activationSource };
@@ -1095,7 +1112,7 @@ app.get('/api/admin/state', requireAdminToken, async (req, res) => {
     catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try {
         const data = readManagerData();
-        res.json({ success: true, plans: data.plans, users: data.vouchers, sales: data.sales, warning, sharedVouchers: Boolean(sharedVouchers) });
+        res.json({ success: true, plans: data.plans, users: data.vouchers, sales: data.sales, dataUsage: data.dataUsage, warning, sharedVouchers: Boolean(sharedVouchers) });
     } catch (error) { res.status(500).json({ success: false, message: 'Could not read saved manager records.' }); }
 });
 
@@ -1502,7 +1519,16 @@ app.post('/api/paystack/webhook', async (req, res) => {
     const timers = [];
     function startJobs() {
         if (timers.length) return;
-        const sync = () => syncCalendarActivations().catch((error) => console.error('Town calendar sync failed:', env.TOWN_ID || 'default', error.message));
+        let syncing = false;
+        const sync = async () => {
+            if (syncing) return;
+            syncing = true;
+            try {
+                if (!sharedVouchers) mergeMikroTikUsers(readManagerData(), await readMikroTikHotspotUsers());
+                await syncCalendarActivations();
+            } catch (error) { console.error('Town usage/calendar sync failed:', env.TOWN_ID || 'default', error.message); }
+            finally { syncing = false; }
+        };
         timers.push(setTimeout(recoverPendingPayments, 1000), setInterval(recoverPendingPayments, 30000),
             setTimeout(sync, 5000), setInterval(sync, 10000));
     }
@@ -1511,6 +1537,9 @@ app.post('/api/paystack/webhook', async (req, res) => {
             const data = readManagerData();
             const voucher = data.vouchers.find((item) => item.id === id);
             if (!voucher) throw new Error('Voucher no longer exists.');
+            if (Number.isSafeInteger(changes.dataConsumedBytes)) {
+                recordDataUsage(data.dataUsage, changes.dataConsumedBytes - (voucher.dataConsumedBytes || 0), changes.dataUsageUpdatedAt);
+            }
             Object.assign(voucher, changes);
             saveManagerData(data);
         },

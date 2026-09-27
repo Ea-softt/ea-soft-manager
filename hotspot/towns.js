@@ -124,9 +124,11 @@ function createMultiTownApp({ env = process.env, createTownApp, authInstaller = 
     });
     app.get('/api/admin/towns/overview', requireAdmin, (_req, res) => {
         const sales = [];
+        const usageHistories = [];
         const summaries = towns.map(({ id, name }) => {
             try {
                 const data = instances.get(id).readManagerData();
+                usageHistories.push(data.dataUsage);
                 sales.push(...data.sales.map((sale) => ({ ...sale, id: `${id}:${sale.id}`, townId: id })));
                 return { id, name, available: true, vouchers: data.vouchers.length,
                     active: data.vouchers.filter((v) => v.status === 'active' && (v.expiresAt == null || v.expiresAt > Date.now())).length,
@@ -134,7 +136,9 @@ function createMultiTownApp({ env = process.env, createTownApp, authInstaller = 
             } catch { return { id, name, available: false }; }
         });
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, towns: summaries, sales, complete: summaries.every((town) => town.available) });
+        const dataUsage = usageHistories.length === towns.length && usageHistories.every((history) => history && Array.isArray(history.days))
+            ? { startedAt: Math.min(...usageHistories.map((history) => history.startedAt)), coverageStartedAt: Math.max(...usageHistories.map((history) => history.startedAt)), days: usageHistories.flatMap((history) => history.days) } : null;
+        res.json({ success: true, towns: summaries, sales, dataUsage, complete: summaries.every((town) => town.available) });
     });
     app.use('/api/towns/:townId', (req, res, next) => {
         const instance = instances.get(req.params.townId);
