@@ -3,10 +3,16 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
+  "description": "EA-Soft hotspot customer, voucher, and finance manager",
+  "author": "EA-Soft",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "desktop:start": "npm run build && node scripts/start-desktop.cjs",
+    "desktop:smoke": "npm run build && node scripts/start-desktop.cjs --smoke-test",
+    "desktop:build": "npm run build && node -e \"require('electron')\" && electron-builder --win --x64",
     "cap:sync": "npm run build && cap sync",
     "android:add": "cap add android",
     "android:open": "cap open android",
@@ -19,6 +25,8 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.4.3",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "vite": "^6.1.0"
   }
 }

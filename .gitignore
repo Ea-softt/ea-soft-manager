@@ -4,6 +4,7 @@ node_modules/
 
 # Build outputs
 dist/
+release/
 **/dist/
 android/app/build/
 android/build/

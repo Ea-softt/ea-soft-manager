@@ -1,0 +1,23 @@
+{
+  "appId": "com.easoft.manager",
+  "productName": "EA-Soft Manager",
+  "directories": { "output": "release" },
+  "files": ["dist/**/*", "electron/main.cjs", "assets/icon.png", "package.json"],
+  "asar": true,
+  "npmRebuild": false,
+  "electronDist": "node_modules/electron/dist",
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "icon": "assets/icon.png",
+    "artifactName": "EA-Soft-Manager-Setup-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "EA-Soft Manager",
+    "deleteAppDataOnUninstall": false
+  }
+}

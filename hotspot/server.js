@@ -929,10 +929,23 @@ function mergeMikroTikUsers(data, mikrotikUsers) {
             };
         });
 
-    if (imported.length) {
-        data.vouchers.unshift(...imported);
-        writeManagerData(data);
+    data.vouchers.unshift(...imported);
+    const routerByName = new Map(mikrotikUsers.map((user) => [user.name, user]));
+    const observedAt = Date.now();
+    let changed = imported.length > 0;
+    for (const voucher of data.vouchers) {
+        const routerUser = routerByName.get(voucher.username);
+        if (!routerUser) continue;
+        const counters = [routerUser['bytes-in'], routerUser['bytes-out']];
+        // Missing counters are unknown, not zero. Keep the last valid reading.
+        if (!counters.every((value) => /^\d+$/.test(String(value)))) continue;
+        const [upload, download] = counters.map(Number);
+        if (!Number.isSafeInteger(upload + download)) continue;
+        voucher.dataConsumedBytes = upload + download;
+        voucher.dataUsageUpdatedAt = observedAt;
+        changed = true;
     }
+    if (changed) writeManagerData(data);
 
     return data;
 }

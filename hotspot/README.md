@@ -1,5 +1,17 @@
 # EA-Soft Paystack V2 + MikroTik Hotspot
 
+## Customer data consumed
+
+The manager's customer and recent-voucher tables display the latest saved sum of
+MikroTik HotSpot user `bytes-in` and `bytes-out`, fetched during the existing state
+refresh. Each reading includes its timestamp. Missing counters show as unavailable;
+failed refreshes retain the last reading. Values follow the router's counters, so
+router counter resets can reduce them and they are not a permanent usage ledger.
+Active traffic appears when RouterOS updates its user counters. Display units use
+1024 bytes per KB, consistent with the manager's quota calculations.
+
+Deploy the updated backend `server.js` and rebuild the manager frontend together.
+
 ## Architecture
 
 Customer phone

@@ -1,6 +1,6 @@
 # EA-Soft Manager
 
-Android-ready management dashboard for EA-Soft hotspot vouchers. This app is separate from the MikroTik hotspot files in `hotspot/`.
+Windows desktop (Electron), Android, and web management dashboard for EA-Soft hotspot vouchers. This app is separate from the MikroTik hotspot files in `hotspot/`.
 
 ## Run
 
@@ -8,6 +8,35 @@ Android-ready management dashboard for EA-Soft hotspot vouchers. This app is sep
 npm install
 npm run dev
 ```
+
+## Windows desktop (Electron)
+
+Install dependencies with `npm install`, then run:
+
+```powershell
+npm run desktop:start
+```
+
+Build the Windows 64-bit setup installer:
+
+```powershell
+npm run desktop:build
+```
+
+The installer is saved to
+`release/EA-Soft-Manager-Setup-1.0.0-x64.exe`. It provides an installation wizard,
+desktop and Start menu shortcuts, and an uninstaller. Build downloads require
+internet access. Signing requires a separately configured Windows signing
+certificate; local builds are unsigned.
+
+The desktop app connects to the existing remote hotspot API and uses your admin
+login. It does not install the backend or MikroTik services. CSV and backup
+exports open a Save dialog. Desktop settings are stored separately from Android
+and the browser. `npm run desktop:smoke` checks that the desktop login screen and
+styles load with Node access disabled in the renderer.
+
+Packaging references: [Electron BrowserWindow](https://www.electronjs.org/docs/latest/api/browser-window)
+and [electron-builder NSIS](https://www.electron.build/nsis.html).
 
 ## Android
 
