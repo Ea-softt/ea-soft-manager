@@ -18,7 +18,7 @@ async function main() {
   let sessions = [];
   const scheduled = [];
   const disabled = [];
-  const context = vm.createContext({ fs, path, crypto, DATA_FILE: file,
+  const context = vm.createContext({ fs, path, crypto, DATA_FILE: file, env: {}, sharedVouchers: null,
     Date: class extends Date { static now() { return clock; } },
     defaultPlans: [{ id: 'daily', name: 'Daily', price: 5, dataLimit: 11, duration: 1, period: 'days' }],
     console: { error() {} },

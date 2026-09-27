@@ -1,4 +1,4 @@
-require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
+if (require.main === module) require('dotenv').config({ path: require('path').join(__dirname, '.env'), override: true });
 
 const crypto = require('crypto');
 const fs = require('fs');
@@ -26,25 +26,25 @@ class RouterOSAPI extends BaseRouterOSAPI {
     }
 }
 
+function createTownApp(env = process.env, sharedRequireAdmin, sharedVouchers = null) {
 const app = express();
 app.use(express.json({
     limit: '1mb',
     verify: (req, res, buf) => {
-        if (req.originalUrl === '/api/paystack/webhook') {
+        if (req.path === '/api/paystack/webhook') {
             req.rawBody = Buffer.from(buf);
         }
     }
 }));
 
 app.use(cors({
-    origin: process.env.FRONTEND_ORIGIN || '*',
+    origin: env.FRONTEND_ORIGIN || '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-paystack-signature', 'Authorization']
 }));
 
-const PORT = process.env.PORT || 3000;
-const BACKEND_VERSION = 'recovered-activation-2026-09-23';
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
+const BACKEND_VERSION = 'town-settings-2026-09-27';
+const DATA_FILE = env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
     { id: '3-hours', name: '3 Hours', period: 'hours', duration: 3, dataLimit: 5, price: 3.75, color: 'mint' },
@@ -99,6 +99,8 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
     data.vouchers = data.vouchers.map((item) => {
         const current = latestVouchers.get(item.id);
         if (!current) return item;
+        if (current.radiusSessions) item = { ...item, radiusSessions: current.radiusSessions, dataConsumedBytes: current.dataConsumedBytes, dataUsageUpdatedAt: current.dataUsageUpdatedAt, lastTownId: current.lastTownId, radiusRevoked: current.radiusRevoked };
+        if (current.radiusRevoked) item = { ...item, radiusRevoked: true, status: 'expired' };
         if (current.activatedAt && !item.activatedAt) item = { ...item, activatedAt: current.activatedAt, activationSource: current.activationSource };
         if (current.expiresAt && !item.expiresAt) item = { ...item, expiresAt: current.expiresAt, durationMs: current.durationMs, expirySchedulePending: current.expirySchedulePending };
         // Old router snapshots cannot undo a recovered purchase or completed activation.
@@ -130,10 +132,10 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
 }
 
 const { installAdminAuth } = require('./admin-auth');
-const requireAdminToken = installAdminAuth(app);
+const requireAdminToken = sharedRequireAdmin || installAdminAuth(app, { env });
 // An incomplete optional Terminal deployment must not take login or payments down.
 try {
-    require('./terminal').installTerminal(app, requireAdminToken);
+    require('./terminal').installTerminal(app, requireAdminToken, { env });
 } catch (error) {
     console.error('MikroTik Terminal unavailable:', error.message);
     app.post('/api/admin/terminal', requireAdminToken, (req, res) => {
@@ -143,30 +145,31 @@ try {
 }
 
 function required(name) {
-    if (!process.env[name]) {
+    if (!env[name]) {
         throw new Error(`Missing environment variable: ${name}`);
     }
-    return process.env[name];
+    return env[name];
 }
 
 function getMikroTikApiOptions() {
-    const host = process.env.MIKROTIK_HOST || '192.168.10.1';
-    const port = Number(process.env.MIKROTIK_PORT || 8728);
+    const host = env.MIKROTIK_HOST || '192.168.10.1';
+    const port = Number(env.MIKROTIK_PORT || 8728);
 
     return {
         host,
         port,
         user: required('MIKROTIK_USERNAME'),
         password: required('MIKROTIK_PASSWORD'),
-        timeout: Number(process.env.MIKROTIK_REQUEST_TIMEOUT_MS || 10000) / 1000
+        timeout: Number(env.MIKROTIK_REQUEST_TIMEOUT_MS || 10000) / 1000
     };
 }
 
-const initializingVoucherUsernames = new Set();
+const initializingVoucherUsernames = sharedVouchers?.reservations || new Set();
 
 function generateVoucherUsername() {
     const data = readManagerData();
     const used = new Set([
+        ...(sharedVouchers ? sharedVouchers.allUsernames() : []),
         ...data.vouchers.map((voucher) => String(voucher.username)),
         ...data.paymentAttempts.map((attempt) => String(attempt.username)),
         ...initializingVoucherUsernames
@@ -294,7 +297,7 @@ async function sendVoucherSms(phone, username, password, profile) {
         return { success: false, message: 'Invalid phone number for SMS.' };
     }
 
-    const provider = (process.env.SMS_PROVIDER || 'generic').toLowerCase();
+    const provider = (env.SMS_PROVIDER || 'generic').toLowerCase();
     const message = `EA-Soft Wi-Fi voucher: username=${username}, password=${password}, profile=${profile}. Keep this message for login.`;
 
     try {
@@ -328,7 +331,7 @@ async function sendVoucherSms(phone, username, password, profile) {
         if (provider === 'africastalking') {
             const apiKey = required('AFRICASTALKING_API_KEY');
             const username = required('AFRICASTALKING_USERNAME');
-            const senderId = process.env.AFRICASTALKING_SENDER_ID || 'EA-Soft';
+            const senderId = env.AFRICASTALKING_SENDER_ID || 'EA-Soft';
 
             const response = await fetch('https://api.africastalking.com/version1/messaging', {
                 method: 'POST',
@@ -355,7 +358,7 @@ async function sendVoucherSms(phone, username, password, profile) {
         }
 
         if (provider === 'bulksmsgh') {
-            const smsUrl = process.env.SMS_API_URL || process.env.SMS_HTTP_URL;
+            const smsUrl = env.SMS_API_URL || env.SMS_HTTP_URL;
             if (!smsUrl) {
                 return { success: false, message: 'BulkSMS Ghana API URL is not configured.' };
             }
@@ -367,7 +370,7 @@ async function sendVoucherSms(phone, username, password, profile) {
 
             url.searchParams.set('to', bulkSmsRecipient);
             url.searchParams.set('msg', message);
-            url.searchParams.set('sender_id', process.env.SMS_SENDER_ID || 'EA-Soft');
+            url.searchParams.set('sender_id', env.SMS_SENDER_ID || 'EA-Soft');
 
             const response = await fetch(url, {
                 method: 'GET',
@@ -389,7 +392,7 @@ async function sendVoucherSms(phone, username, password, profile) {
             return { success: true, provider, response: data };
         }
 
-        const smsUrl = process.env.SMS_API_URL || process.env.SMS_HTTP_URL;
+        const smsUrl = env.SMS_API_URL || env.SMS_HTTP_URL;
         if (!smsUrl) {
             return { success: false, message: 'No SMS provider configured.' };
         }
@@ -423,11 +426,11 @@ async function sendVoucherSms(phone, username, password, profile) {
 
 function chooseProfile(planName) {
     const profiles = {
-        '3 Hours': process.env.PROFILE_3_HOURS || '3-HOURS',
-        'Daily': process.env.PROFILE_DAILY || 'DAILY',
-        '3 Days': process.env.PROFILE_3_DAYS || '3-DAYS',
-        '7 Days': process.env.PROFILE_7_DAYS || '7-DAYS',
-        '30 Days': process.env.PROFILE_30_DAYS || '30-DAYS'
+        '3 Hours': env.PROFILE_3_HOURS || '3-HOURS',
+        'Daily': env.PROFILE_DAILY || 'DAILY',
+        '3 Days': env.PROFILE_3_DAYS || '3-DAYS',
+        '7 Days': env.PROFILE_7_DAYS || '7-DAYS',
+        '30 Days': env.PROFILE_30_DAYS || '30-DAYS'
     };
 
     if (profiles[planName]) return profiles[planName];
@@ -838,6 +841,7 @@ function activationDuration(voucher, plans) {
     return plan ? planDurationMs(plan) : 0;
 }
 async function syncCalendarActivations() {
+    if (sharedVouchers) { sharedVouchers.expireTown(env.TOWN_ID || 'default'); return; }
     // A state refresh must also check users imported while an earlier sync was running.
     while (calendarSyncRunning) await calendarSyncRunning;
     calendarSyncRunning = performCalendarActivationSync();
@@ -1041,6 +1045,8 @@ function recordPaidVoucher({
         expirySchedulePending: imported?.expirySchedulePending || false,
         planName,
         durationMs: imported?.durationMs || (plan ? planDurationMs(plan) : 0),
+        sharedUsers: plan?.sharedUsers || 1,
+        rateLimit: plan?.rateLimit || '',
 
         status: provisioning === 'pending' ? 'pending' : 'active',
         provisioning,
@@ -1063,7 +1069,7 @@ app.get('/api/health', (req, res) => {
         success: true,
         service: 'EA-Soft payment server',
         version: BACKEND_VERSION,
-        mikrotikApi: `${process.env.MIKROTIK_HOST || '192.168.10.1'}:${process.env.MIKROTIK_PORT || 8728}`
+        mikrotikApi: `${env.MIKROTIK_HOST || '192.168.10.1'}:${env.MIKROTIK_PORT || 8728}`
     });
 });
 
@@ -1080,14 +1086,16 @@ app.get('/api/health', (req, res) => {
 app.get('/api/admin/state', requireAdminToken, async (req, res) => {
     let warning = '';
     try {
-        const routerUsers = await readMikroTikHotspotUsers();
-        mergeMikroTikUsers(readManagerData(), routerUsers);
+        if (!sharedVouchers) {
+            const routerUsers = await readMikroTikHotspotUsers();
+            mergeMikroTikUsers(readManagerData(), routerUsers);
+        }
     } catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try { await syncCalendarActivations(); }
     catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try {
         const data = readManagerData();
-        res.json({ success: true, plans: data.plans, users: data.vouchers, sales: data.sales, warning });
+        res.json({ success: true, plans: data.plans, users: data.vouchers, sales: data.sales, warning, sharedVouchers: Boolean(sharedVouchers) });
     } catch (error) { res.status(500).json({ success: false, message: 'Could not read saved manager records.' }); }
 });
 
@@ -1124,8 +1132,8 @@ app.put('/api/admin/plans', requireAdminToken, (req, res) => {
     const currentProfiles = new Set(data.plans.map((plan) => profileNameForPlan(plan)));
     const removedProfiles = previousProfiles.filter((profile) => !currentProfiles.has(profile));
 
-    syncMikroTikProfiles(data.plans)
-        .then(() => removeMikroTikProfiles(removedProfiles))
+    (sharedVouchers ? Promise.resolve() : syncMikroTikProfiles(data.plans))
+        .then(() => sharedVouchers ? undefined : removeMikroTikProfiles(removedProfiles))
         .then(() => {
             writeManagerData(data, null, [], true);
             return res.json({ success: true, plans: data.plans });
@@ -1137,6 +1145,7 @@ app.put('/api/admin/plans', requireAdminToken, (req, res) => {
 });
 
 app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
+    let reservedUsername;
     try {
         const { username, password, phone, planId, amount } = req.body || {};
         const data = readManagerData();
@@ -1152,7 +1161,13 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
             return res.status(400).json({ success: false, message: `No MikroTik profile mapping exists for ${plan.name}.` });
         }
 
-        await createMikroTikUser(username, password, profile, quotaBytes);
+        if (sharedVouchers) {
+            const name = String(username).trim();
+            sharedVouchers.assertAvailable(name);
+            if (initializingVoucherUsernames.has(name)) throw new Error('Voucher username is being created.');
+            initializingVoucherUsernames.add(name);
+            reservedUsername = name;
+        } else await createMikroTikUser(username, password, profile, quotaBytes);
         const now = Date.now();
 
         const voucher = {
@@ -1164,6 +1179,8 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
 
         planId: plan.id,
         durationMs: planDurationMs(plan),
+        sharedUsers: plan.sharedUsers || 1,
+        rateLimit: plan.rateLimit || '',
 
         amount: Number(amount ?? plan.price),
 
@@ -1186,7 +1203,7 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
     } catch (error) {
         console.error(error);
         return res.status(500).json({ success: false, message: error.message || 'Voucher creation failed.' });
-    }
+    } finally { if (reservedUsername) initializingVoucherUsernames.delete(reservedUsername); }
 });
 
 
@@ -1217,7 +1234,8 @@ app.delete('/api/admin/vouchers/:id', requireAdminToken, async (req, res) => {
     }
 
     try {
-        await deleteMikroTikUser(voucher.username);
+        if (sharedVouchers) await sharedVouchers.revoke(voucher.username);
+        else await deleteMikroTikUser(voucher.username);
         const latestData = readManagerData();
         latestData.vouchers = latestData.vouchers.filter((item) => item.id !== req.params.id);
         writeManagerData(latestData, null, [req.params.id]);
@@ -1244,6 +1262,7 @@ function fulfillPayment(reference) {
         if (transaction.status !== 'success') throw new Error('This payment has not completed successfully yet.');
         if (transaction.reference !== reference || transaction.currency !== 'GHS' || !Number.isFinite(Number(transaction.amount)) || Number(transaction.amount) <= 0) throw new Error('Payment reference, currency, or amount is invalid.');
         const metadata = typeof transaction.metadata === 'string' ? JSON.parse(transaction.metadata) : transaction.metadata || {};
+        if ((metadata.town_id || 'default') !== (env.TOWN_ID || 'default')) throw new Error('This payment belongs to a different town. Select its town before recovering it.');
         const fields = Array.isArray(metadata.custom_fields) ? metadata.custom_fields : [];
         const value = (name) => metadata[name] || fields.find((field) => field.variable_name === name)?.value;
         const planName = value('package_name') || value('plan_name');
@@ -1255,12 +1274,14 @@ function fulfillPayment(reference) {
         if (metadata.package_amount != null && Number(metadata.package_amount) !== Number(transaction.amount)) throw new Error('Payment amount does not match the checkout price.');
         let data = readManagerData();
         let voucher = data.vouchers.find((item) => item.paymentReference === reference);
+        if (voucher?.radiusRevoked) throw new Error('This voucher was revoked.');
         const attempt = data.paymentAttempts.find((item) => item.reference === reference);
         const plan = data.plans.find((item) => item.name === planName) || defaultPlans.find((item) => item.name === planName);
         const expectedAmount = attempt?.amount ?? voucher?.amount ?? plan?.price;
         if (!Number.isFinite(Number(expectedAmount)) || Math.round(Number(expectedAmount) * 100) !== Number(transaction.amount)) throw new Error('Verified payment amount does not match the package price.');
         if (!voucher && data.sales.some((sale) => sale.paymentReference === reference)) throw new Error('This payment was already recorded and its voucher was deleted.');
         if (!voucher) {
+            if (sharedVouchers) sharedVouchers.assertAvailable(String(username).trim(), reference);
             voucher = recordPaidVoucher({ reference, planName, amount: Number(transaction.amount) / 100,
                 phone: value('phone') || value('mobile_number') || transaction.customer?.phone || '',
                 username, password, source: 'online-payment', paidAt: transaction.paid_at });
@@ -1269,10 +1290,12 @@ function fulfillPayment(reference) {
             rememberPaymentAttempt(reference);
             try {
                 // Recover a prior successful router write if the process stopped before saving it.
+                if (!sharedVouchers) {
                 const routerUser = (await readMikroTikHotspotUsers()).find((item) => item.name === voucher.username);
                 if (routerUser) {
                     if (routerUser.password !== voucher.password || routerUser.profile !== profile) throw new Error('Router username exists with different credentials or package.');
                 } else await createMikroTikUser(voucher.username, voucher.password, profile, quotaBytes);
+                }
             } catch (error) {
                 throw new Error('Payment is recorded in Manager; hotspot activation is pending and will retry automatically. ' + error.message);
             }
@@ -1355,7 +1378,7 @@ app.post('/api/initiate-payment', async (req, res) => {
         reservedUsername = username;
         initializingVoucherUsernames.add(username);
         const password = generateVoucherPassword();
-        const reference = `EA-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+        const reference = `EA-${crypto.randomUUID()}`;
         const secretKey = required('PAYSTACK_SECRET_KEY');
 
         const paystackResponse = await fetch('https://api.paystack.co/transaction/initialize', {
@@ -1372,6 +1395,7 @@ app.post('/api/initiate-payment', async (req, res) => {
                 channels: ['mobile_money'],
                 phone: normalizedPhone,
                 metadata: {
+                    town_id: env.TOWN_ID || 'default',
                     custom_fields: [
                         { display_name: 'Package', variable_name: 'package_name', value: planName },
                         { display_name: 'Hotspot Profile', variable_name: 'hotspot_profile', value: profile },
@@ -1471,42 +1495,43 @@ app.post('/api/paystack/webhook', async (req, res) => {
 
 // app.listen(PORT, () => {
 //     console.log(`EA-Soft payment server running on port ${PORT}`);
-//     console.log(`MikroTik API: ${process.env.MIKROTIK_HOST || '192.168.10.1'}:${process.env.MIKROTIK_PORT || 8728}`);
+//     console.log(`MikroTik API: ${env.MIKROTIK_HOST || '192.168.10.1'}:${env.MIKROTIK_PORT || 8728}`);
 // });
 
-app.listen(PORT, () => {
-    setTimeout(recoverPendingPayments, 1000);
-    setInterval(recoverPendingPayments, 30000);
-    console.log(
-        `EA-Soft payment server running on port ${PORT}`
-    );
 
-    console.log(
-        `MikroTik API: ${
-            process.env.MIKROTIK_HOST || '192.168.10.1'
-        }:${
-            process.env.MIKROTIK_PORT || 8728
-        }`
-    );
+    const timers = [];
+    function startJobs() {
+        if (timers.length) return;
+        const sync = () => syncCalendarActivations().catch((error) => console.error('Town calendar sync failed:', env.TOWN_ID || 'default', error.message));
+        timers.push(setTimeout(recoverPendingPayments, 1000), setInterval(recoverPendingPayments, 30000),
+            setTimeout(sync, 5000), setInterval(sync, 10000));
+    }
+    return { app, readManagerData, startJobs,
+        updateSharedVoucher(id, changes) {
+            const data = readManagerData();
+            const voucher = data.vouchers.find((item) => item.id === id);
+            if (!voucher) throw new Error('Voucher no longer exists.');
+            Object.assign(voucher, changes);
+            saveManagerData(data);
+        },
+        async disconnectSharedVoucher(username) {
+            const api = new RouterOSAPI(getMikroTikApiOptions());
+            try {
+                await api.connect();
+                for (const session of await api.write('/ip/hotspot/active/print')) {
+                    if (String(session.user) === username && session['.id']) await api.write('/ip/hotspot/active/remove', [`=.id=${session['.id']}`]);
+                }
+            } finally { await api.close().catch(() => {}); }
+        },
+        stopJobs() { timers.forEach(clearInterval); timers.length = 0; } };
+}
 
-    // Check for newly activated vouchers immediately.
-    setTimeout(() => {
-        syncCalendarActivations().catch((error) => {
-            console.error(
-                'Initial calendar sync failed:',
-                error.message || error
-            );
-        });
-
-        // Check every 10 seconds.
-        setInterval(() => {
-            syncCalendarActivations().catch((error) => {
-                console.error(
-                    'Calendar sync failed:',
-                    error.message || error
-                );
-            });
-        }, 10000);
-
-    }, 5000);
-});
+module.exports = { createTownApp };
+if (require.main === module) {
+    const { createMultiTownApp } = require('./towns');
+    const manager = createMultiTownApp({ createTownApp });
+    manager.app.listen(Number(process.env.PORT || 3000), () => {
+        manager.startJobs();
+        console.log('EA-Soft server ready for', manager.townCount, 'town(s).');
+    });
+}

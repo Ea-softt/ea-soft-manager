@@ -1,0 +1,15 @@
+[
+  { "id": "default", "name": "My first town" },
+  {
+    "id": "second-town",
+    "name": "My second town",
+    "router": {
+      "MIKROTIK_HOST": "10.20.0.2",
+      "MIKROTIK_PORT": "8728",
+      "MIKROTIK_USERNAME": "manager",
+      "MIKROTIK_PASSWORD": "REPLACE_ON_SERVER",
+      "MIKROTIK_SSH_PORT": "22",
+      "MIKROTIK_SSH_HOST_SHA256": "REPLACE_WITH_TRUSTED_ROUTER_FINGERPRINT"
+    }
+  }
+]

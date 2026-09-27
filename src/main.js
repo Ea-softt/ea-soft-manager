@@ -57,6 +57,17 @@ let accountEmail = '';
 let loginMode = 'login';
 let recoveryEmail = '';
 let authGeneration = 0;
+let towns = [];
+let selectedTown = 'default';
+let townSummaries = [];
+let townsComplete = false;
+let sharedVoucherMode = false;
+let townSettings = null;
+let townSettingsLoading = false;
+let townSettingsError = '';
+let townSaveMessage = '';
+let savingTown = false;
+let pendingRequests = 0;
 state.settings.adminToken = '';
 state.users = [];
 state.sales = [];
@@ -83,6 +94,15 @@ function signOut() {
   terminalOutput = '';
   terminalBusy = false;
   authenticated = false;
+  towns = [];
+  sharedVoucherMode = false;
+  townSettings = null;
+  townSettingsLoading = false;
+  townSettingsError = '';
+  townSaveMessage = '';
+  savingTown = false;
+  selectedTown = 'default';
+  townSummaries = [];
   financeAvailable = false;
   hasLoadedState = false;
   syncError = '';
@@ -196,6 +216,20 @@ async function refreshBiometricControls(form) {
 function apiUrl(pathname = '') { return `${state.settings.apiUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')}${pathname}`; }
 function hasRemoteApi() { return Boolean(state.settings.apiUrl && state.settings.adminToken); }
 async function apiRequest(pathname, options = {}) {
+  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment)$/;
+  if (townRoutes.test(pathname)) {
+    if (selectedTown === 'all') throw new Error('Select a town first.');
+    pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
+  }
+  pendingRequests += 1;
+  try { return await performApiRequest(pathname, options); }
+  finally {
+    pendingRequests -= 1;
+    const picker = document.querySelector('#town-select');
+    if (picker) picker.disabled = Boolean(pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan);
+  }
+}
+async function performApiRequest(pathname, options = {}) {
   const generation = authGeneration;
   let endpoint;
   try {
@@ -227,13 +261,36 @@ async function apiRequest(pathname, options = {}) {
     error.status = 401;
     throw error;
   }
-  if (response.status === 404) throw new Error(`The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Install the updated server.js, admin-auth.js, package.json, and package-lock.json, run npm install, then restart the backend.`);
+  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
   if (!response.ok || data.success === false) throw new Error(data.message || `API request failed (${response.status})`);
   return data;
 }
 async function syncRemoteState() {
   if (!hasRemoteApi()) throw new Error('Sign in to connect to your workspace.');
+  const town = selectedTown;
+  const generation = authGeneration;
+  if (!towns.length) {
+    const result = await apiRequest('/api/admin/towns');
+    if (generation !== authGeneration) return;
+    if (!Array.isArray(result.towns) || !result.towns.some((item) => item.id === 'default')) throw new Error('Install the multi-town backend update to load your towns.');
+    towns = result.towns;
+    sharedVoucherMode = result.sharedVouchers === true;
+  }
+  if (town === 'all') {
+    const result = await apiRequest('/api/admin/towns/overview');
+    if (selectedTown !== town || generation !== authGeneration) return;
+    townSummaries = result.towns;
+    townsComplete = result.complete;
+    state.sales = result.sales;
+    state.users = [];
+    state.plans = [];
+    financeAvailable = result.complete;
+    hasLoadedState = true;
+    syncError = result.complete ? '' : 'Some town records are unavailable. Combined totals are unavailable until all towns can be read.';
+    return;
+  }
   const remote = await apiRequest('/api/admin/state');
+  if (selectedTown !== town || generation !== authGeneration) return;
   if (bulkCreating || bulkDeleting) return;
   if (!Array.isArray(remote.plans) || !Array.isArray(remote.users)) throw new Error('The backend returned an invalid workspace response.');
   financeAvailable = Array.isArray(remote.sales);
@@ -297,16 +354,17 @@ function render() {
           ${navItem('terminal', 'Terminal', 'Terminal')}
           ${navItem('settings', 'Settings', 'Settings')}
         </nav>
-        <div class="sidebar-foot"><span class="status-dot"></span> Admin workspace</div>
+        <div class="sidebar-foot"><span class="status-dot"></span> ${sharedVoucherMode ? 'Vouchers valid in all towns' : 'Admin workspace'}</div>
       </aside>
       <main class="main-content">
-        <header class="topbar"><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
+        <header class="topbar"><label class="town-picker">Town<select id="town-select" ${pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan ? 'disabled' : ''}><option value="all" ${selectedTown === 'all' ? 'selected' : ''}>All towns</option>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
   createIcons({ icons: { LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } });
   bindEvents();
+  bindTownSettings();
 }
 
 function renderTerminal() {
@@ -351,6 +409,11 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (selectedTown === 'all') {
+    if (activeView === 'finances' && townsComplete) return renderFinances();
+    if (activeView === 'settings') return renderSettings();
+    return renderAllTowns();
+  }
   if (activeView === 'users') return renderUsers();
   if (activeView === 'plans') return renderPlans();
   if (activeView === 'finances') return renderFinances();
@@ -410,7 +473,84 @@ function userTable(users, full = false) {
 }
 function planMini(plan) { return `<div class="mini-plan"><span class="plan-color ${plan.color}"></span><div><strong>${plan.name}</strong><small>${plan.dataLimit} GB · ${plan.duration} ${plan.period}</small></div><b>${money(plan.price)}</b></div>`; }
 function renderPlans() { return `<div class="heading-row"><div><p class="eyebrow">PRODUCT CATALOG</p><h1>Plans & pricing</h1><p class="subhead">Change price, data limit, and time limit without touching the hotspot portal.</p></div><button class="primary-button" data-action="new-plan">${icon('Plus')} Add plan</button></div><div class="plan-grid">${state.plans.map((plan) => `<article class="plan-card ${plan.color}"><div class="plan-card-top"><span class="plan-color"></span><div class="row-actions"><button class="icon-button small" data-action="edit-plan" data-id="${plan.id}" title="Edit plan">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-plan" data-id="${plan.id}" title="Delete plan">${icon('Trash2', 16)}</button></div></div><h2>${plan.name}</h2><p class="plan-price">${money(plan.price)}</p><div class="plan-meta"><span>${icon('Database', 15)} ${plan.dataLimit} GB</span><span>${icon('Clock3', 15)} ${plan.duration} ${plan.period}</span><span>Shared: ${plan.sharedUsers || 1}</span><span>${plan.rateLimit || 'No rate limit'}</span></div></article>`).join('')}</div>`; }
-function renderSettings() {
+function renderSettings() { return renderAccountSettings() + renderTownSettings(); }
+function renderTownSettings() {
+  const heading = '<h2>Towns &amp; MikroTik routers</h2><p>Add each town and its router connection here. Use the router’s VPN/private address reachable from your server.</p>';
+  if (!townSettings) return `<section class="panel settings-panel town-settings">${heading}<p role="status">${escapeText(townSettingsError || 'Loading towns…')}</p>${townSettingsError ? '<button class="secondary-button" id="retry-town-settings">Retry</button>' : ''}</section>`;
+  return `<section class="panel settings-panel town-settings">${heading}
+    <div class="town-settings-list">${townSettings.map((town) => `<article><strong>${escapeText(town.name)}</strong><small>${escapeText(town.host)}:${escapeText(town.port)} · ${escapeText(town.username)}</small></article>`).join('')}</div>
+    <form id="add-town-form" autocomplete="off"><fieldset ${savingTown ? 'disabled' : ''}>
+      <h3>Add town</h3>
+      <label>Town name<input name="name" required maxlength="80" placeholder="e.g. Kumasi" /></label>
+      <div class="form-row"><label>MikroTik address<input name="host" required maxlength="253" placeholder="e.g. 10.200.0.3" spellcheck="false" /></label><label>API port<input name="port" type="number" min="1" max="65535" value="8728" required /></label></div>
+      <div class="form-row"><label>MikroTik username<input name="username" required maxlength="128" autocomplete="off" spellcheck="false" /></label><label>MikroTik password<input name="password" type="password" required maxlength="256" autocomplete="new-password" /></label></div>
+      <details><summary>Optional Terminal connection</summary><p>Terminal uses the same router username and password.</p><label>SSH port<input name="sshPort" type="number" min="1" max="65535" value="22" /></label><label>Trusted SSH fingerprint<input name="sshFingerprint" maxlength="64" pattern="[a-fA-F0-9]{64}" placeholder="64 hexadecimal characters" spellcheck="false" /></label></details>
+      <button class="primary-button" type="submit">${savingTown ? 'Saving…' : 'Add town'}</button>
+    </fieldset><p id="town-save-message" role="status" aria-live="polite">${escapeText(townSaveMessage)}</p></form>
+  </section>`;
+}
+async function loadTownSettings() {
+  if (townSettingsLoading || !authenticated) return;
+  const generation = authGeneration;
+  townSettingsLoading = true;
+  townSettingsError = '';
+  try {
+    const result = await apiRequest('/api/admin/towns/settings');
+    if (generation !== authGeneration) return;
+    if (!Array.isArray(result.towns)) throw new Error('Could not load town settings.');
+    townSettings = result.towns;
+    towns = result.towns.map(({ id, name }) => ({ id, name }));
+  } catch (error) { if (generation === authGeneration) townSettingsError = error.message; }
+  finally {
+    if (generation === authGeneration) {
+      townSettingsLoading = false;
+      if (authenticated && activeView === 'settings') refreshTownSettingsSection();
+    }
+  }
+}
+function bindTownSettings() {
+  if (activeView !== 'settings' || !authenticated) return;
+  document.querySelector('#add-town-form')?.addEventListener('submit', saveTown);
+  document.querySelector('#retry-town-settings')?.addEventListener('click', loadTownSettings);
+  if (!townSettings && !townSettingsLoading && !townSettingsError) loadTownSettings();
+}
+function refreshTownSettingsSection() {
+  const section = document.querySelector('.town-settings');
+  if (section) section.outerHTML = renderTownSettings();
+  const picker = document.querySelector('#town-select');
+  if (picker) picker.innerHTML = `<option value="all" ${selectedTown === 'all' ? 'selected' : ''}>All towns</option>` + towns.map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('');
+  bindTownSettings();
+}
+async function saveTown(event) {
+  event.preventDefault();
+  if (savingTown || !authenticated) return;
+  const generation = authGeneration;
+  const form = event.target;
+  const fields = Object.fromEntries(new FormData(form));
+  savingTown = true;
+  form.querySelector('fieldset').disabled = true;
+  form.querySelector('#town-save-message').textContent = 'Saving town…';
+  try {
+    const result = await apiRequest('/api/admin/towns', { method: 'POST', body: JSON.stringify(fields) });
+    if (generation !== authGeneration) return;
+    townSettings.push(result.town);
+    towns.push({ id: result.town.id, name: result.town.name });
+    townSaveMessage = 'Town added. It is now available in the Town selector.';
+    form.reset();
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    townSaveMessage = error.message;
+    form.querySelector('#town-save-message').textContent = error.message;
+    return;
+  } finally {
+    if (generation === authGeneration) {
+      savingTown = false;
+      form.querySelector('fieldset').disabled = false;
+    }
+  }
+  if (authenticated && activeView === 'settings') refreshTownSettingsSection();
+}
+function renderAccountSettings() {
   return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE</p><h1>Settings</h1><p class="subhead">Manage your admin account and workspace preferences.</p></div></div><section class="panel settings-panel"><h2>Admin account</h2><form id="account-form" class="settings-panel"><label>Email / username<input name="email" type="email" required maxlength="254" autocomplete="username" /></label><label>Current password<input name="currentPassword" type="password" required maxlength="256" autocomplete="current-password" /></label><label>New password (optional)<input name="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm new password<input name="confirmPassword" type="password" maxlength="256" autocomplete="new-password" /></label><p>Your email is your username and receives password-reset codes. Use at least 12 characters for a new password. Saving signs out all sessions.</p><p id="account-message" role="status" aria-live="polite"></p><button class="primary-button" type="submit">Update account</button></form>${isAndroid() ? '<h2>Fingerprint sign-in</h2><p>Enable it from the sign-in screen after entering your password. Turning it off removes the saved login from this phone.</p><button class="secondary-button" data-action="disable-fingerprint">Disable fingerprint sign-in</button>' : ''}<h2>Recover a hotspot payment</h2><p>Enter a successful Paystack reference to verify and recover a missing purchase.</p><label>Payment reference<input id="payment-reference" /></label><button class="secondary-button" data-action="recover-payment">Recover payment</button><h2>Workspace</h2><label>Currency<input id="currency-input" maxlength="4" /></label><div class="settings-actions"><button class="secondary-button" data-action="import">${icon('Upload')} Import backup</button><button class="primary-button" data-action="save-settings">${icon('Save')} Save settings</button></div></section>`;
 }
 async function saveAccount(event) {
@@ -443,8 +583,8 @@ function renderModal() {
   const plan = editingPlan;
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
-function bindEvents() { bindTerminal(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
-async function handleAction(action, id) { if (!authenticated) return; if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
+function bindEvents() { document.querySelector('#town-select')?.addEventListener('change', (event) => { const id = event.target.value; event.target.value = selectedTown; switchTown(id); }); document.querySelectorAll('[data-town]').forEach((el) => el.onclick = () => switchTown(el.dataset.town)); bindTerminal(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
+async function handleAction(action, id) { if (!authenticated) return; if (selectedTown === 'all' && !['sign-out', 'sync', 'finance-range', 'save-settings', 'disable-fingerprint'].includes(action)) { alert('Select a town first.'); return; } if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
 async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH\u20b5'; persist(); }
@@ -462,12 +602,12 @@ async function saveExportFile(filename, text, mimeType) {
 }
 async function exportBackup() {
   try {
-    await saveExportFile('ea-soft-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify({ ...state, settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } }, null, 2), 'application/json');
+    await saveExportFile('ea-soft-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify({ ...state, townId: selectedTown, settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } }, null, 2), 'application/json');
   } catch (error) {
     alert('Could not export backup: ' + error.message);
   }
 }
-function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, sales: state.sales, settings: { ...state.settings } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
+function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if ((imported.townId || 'default') !== selectedTown) throw new Error('Backup belongs to another town'); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, sales: state.sales, settings: { ...state.settings } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
 
 function voucherRandomNumber(limit) {
   const randomValue = new Uint32Array(1);
@@ -486,6 +626,30 @@ function generateShortVoucherCredentials() {
     username: availableUsernames[voucherRandomNumber(availableUsernames.length)],
     password: String(100 + voucherRandomNumber(900))
   };
+}
+function renderAllTowns() {
+  const total = townSummaries.reduce((sum, town) => sum + (town.revenue || 0), 0);
+  return `<div class="heading-row"><div><p class="eyebrow">ALL TOWNS</p><h1>Your Wi-Fi locations</h1><p class="subhead">${sharedVoucherMode ? 'One voucher works in every town with one expiry and one total data allowance. Records and sales are listed under the town that sold the voucher.' : 'Saved records across your towns. Open a town to refresh its router and manage vouchers, plans, or terminal commands.'}</p></div></div>
+    <section class="panel"><h2>Combined revenue</h2><p class="plan-price">${townsComplete ? money(total) : 'Unavailable'}</p><p>All recorded sales across every town.</p></section>
+    <div class="plan-grid">${townSummaries.map((town) => `<article class="panel"><h2>${escapeText(town.name)}</h2><p>${town.available ? `${town.vouchers} vouchers · ${town.active} active` : 'Records unavailable'}</p><p>${town.available ? money(town.revenue) : 'Revenue unavailable'}</p><button class="primary-button" data-town="${escapeText(town.id)}">Open town</button></article>`).join('')}</div>`;
+}
+async function switchTown(id) {
+  if (id === selectedTown || pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan) return;
+  if (id !== 'all' && !towns.some((town) => town.id === id)) return;
+  selectedTown = id;
+  hasLoadedState = false;
+  financeAvailable = false;
+  townsComplete = false;
+  townSummaries = [];
+  state.users = []; state.plans = []; state.sales = [];
+  terminalDraft = ''; terminalOutput = '';
+  searchTerm = ''; statusFilter = 'all';
+  selectedVoucherIds.clear();
+  syncError = '';
+  activeView = 'overview';
+  render();
+  try { await syncRemoteState(); } catch (error) { syncError = error.message; }
+  render();
 }
 async function downloadVoucherCsv(users, plan) {
   const escapeCell = (value) => '"' + String(value ?? '').replace(/"/g, '""') + '"';

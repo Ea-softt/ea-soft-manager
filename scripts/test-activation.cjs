@@ -12,6 +12,7 @@ let fails = true;
 let calls = 0;
 let sessions = [{ user: 'online', uptime: '2h' }, { user: 'custom', uptime: '1h' }];
 const context = vm.createContext({
+  sharedVouchers: null,
   crypto,
   console: { error() {} },
   defaultPlans: [{ id: 'daily', duration: 1, period: 'days' }],

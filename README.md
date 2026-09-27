@@ -11,6 +11,12 @@ npm run dev
 
 ## Windows desktop (Electron)
 
+Multiple towns are supported with a town selector and an All towns overview.
+Deploy the updated backend and configure each router using
+[the multi-town setup guide](hotspot/MULTI-TOWN.md) before installing the new app.
+For a voucher to work in every town with one expiry and one total data allowance,
+enable [shared RADIUS vouchers](hotspot/SHARED-VOUCHERS.md) on the server and routers.
+
 Install dependencies with `npm install`, then run:
 
 ```powershell

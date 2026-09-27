@@ -28,7 +28,7 @@ for (const missing of ['./terminal', 'ssh2']) {
 let installed = false;
 vm.runInNewContext(block, {
   require: () => ({ installTerminal: () => { installed = true; } }),
-  app: {}, requireAdminToken() {}, console
+  app: {}, requireAdminToken() {}, console, env: {}
 });
 assert.ok(installed);
 console.log('Terminal startup isolation tests passed for missing file, missing dependency, and successful installation.');

@@ -2,3 +2,6 @@
  .login-page{min-height:100dvh;display:grid;place-items:center;padding:24px}.login-card{width:min(100%,440px);box-sizing:border-box}.login-card h1{margin:0}.login-card #login-error{color:#a52e25}.login-card button:disabled{opacity:.65;cursor:wait}
 
 .biometric-option{display:flex!important;align-items:center;gap:10px;margin-top:14px;line-height:1.5}.biometric-option input{width:auto;flex-shrink:0}
+.town-picker{display:flex;align-items:center;gap:10px;margin-right:auto;font:700 13px Arial;color:var(--ink)}.town-picker select{max-width:240px;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fffdf7;color:var(--ink)}
+.town-settings{margin-top:24px}.town-settings fieldset{border:0;margin:0;padding:0;display:grid;gap:16px;min-width:0}.town-settings h3{margin:0}.town-settings details{display:grid;gap:12px}.town-settings details label{margin-top:12px}.town-settings summary{cursor:pointer}.town-settings-list{display:grid;gap:12px}.town-settings-list article{padding:12px;border:1px solid var(--line);border-radius:8px}.town-settings-list small{display:block;overflow-wrap:anywhere;margin-top:5px;color:var(--muted)}.town-settings input{min-width:0;width:100%;box-sizing:border-box}
+@media(max-width:640px){.topbar .mobile-brand{display:none}.town-picker{gap:5px}.town-picker select{max-width:155px}}

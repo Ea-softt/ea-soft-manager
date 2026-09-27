@@ -30,4 +30,7 @@ apiforhotspot.txt
 
 # Private admin account
 hotspot/data/admin-account.json*
+hotspot/data/towns.json
+hotspot/data/towns.json.*.tmp
+hotspot/data/towns/
 artifacts/

@@ -8,16 +8,21 @@ Updating the dashboard or uploading MikroTik's login.html does not update this s
    - server.js
    - admin-auth.js
    - terminal.js
+   - towns.js
+   - shared-vouchers.js
    - package.json
    - package-lock.json
 3. Keep the server's existing .env and data directory. Add ADMIN_EMAIL and
    ADMIN_PASSWORD_HASH from the local hotspot/.env to the server environment privately.
    These two values configure the initial account. Do not replace the server's other
    environment settings with the local .env.
-4. Run `npm install` inside that backend folder.
+4. Run `npm ci` inside that backend folder.
 5. Restart the existing Node service using its current process manager (for example,
    PM2, systemd, or the hosting console). Do not start a second copy on the same port.
-6. Check `/api/health`. Its version should be `recovered-activation-2026-09-23`.
+6. Check `/api/health`. Its version should be `town-settings-2026-09-27`.
+   A request to `/api/admin/towns` without a login token should return 401, not
+   404. Shared voucher roaming still requires the separate RADIUS and router
+   setup in [SHARED-VOUCHERS.md](SHARED-VOUCHERS.md).
 7. An empty POST to `/api/admin/session` should return 401 (incorrect credentials),
    not 404. A 503 response means the initial account settings still need configuration.
 8. Sign in using the configured email and password.
