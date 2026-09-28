@@ -94,6 +94,11 @@ DigitalOcean restrictions: https://docs.digitalocean.com/products/droplets/detai
 For other hosting environments with SMTP access, EMAIL_PROVIDER=smtp uses SMTP_HOST,
 SMTP_PORT, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM as before.
 
+To send password recovery emails from a Gmail account over HTTPS, use
+`EMAIL_PROVIDER=gmail` and follow [Gmail setup](hotspot/GMAIL-SETUP.md).
+The local authorization helper saves the Google credentials privately; deploy
+`admin-auth.js` together with `gmail-email.js` and configure the server's `.env`.
+
 The server URL is configured by the app, with no URL or token fields on the login
 screen. The default Android/local-development URL is `http://104.248.239.23/api`;
 web deployments use their own origin. Android permits

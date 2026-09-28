@@ -11,6 +11,56 @@ main:has(#agent-signout) .panel, .panel:has(#staff-form), .panel:has(.agent-paym
 .staff-role-form fieldset { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; border: 0; padding: 0; margin: 0; }
 .staff-role-form label { display: grid; gap: 8px; }
 .staff-role-form select { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fffdf7; color: var(--ink); }
+.staff-workspace { min-width: 0; }
+.staff-heading { align-items: center; gap: 20px; }
+.staff-scope { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid #cce4d8; border-radius: 999px; background: #e8f5ed; color: #087653; font: 600 12px Arial, sans-serif; white-space: nowrap; }
+.staff-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 6px; margin: 24px 0; border: 1px solid var(--line); border-radius: 14px; background: #eeeFE5; }
+.staff-tab { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 52px; padding: 12px; border: 0; border-radius: 10px; background: transparent; color: #536e65; font: 600 13px/1.35 Arial, sans-serif; transition: background .15s, color .15s; }
+.staff-tab:hover { background: #fffdf7; color: #087653; }
+.staff-tab.active { background: #0b705c; color: white; box-shadow: 0 3px 8px #063d3120; }
+.staff-tab svg { flex-shrink: 0; }
+.staff-tab:focus-visible { outline: 3px solid #bd9400; outline-offset: 2px; }
+.staff-workspace .staff-tab-panel { margin-top: 0; padding: 28px; min-width: 0; }
+.staff-workspace [hidden] { display: none !important; }
+.staff-panel-heading { margin-bottom: 24px; }
+.staff-panel-heading h2 { margin: 0 0 8px; font-size: 25px; }
+.staff-panel-heading > p:last-child { margin: 0; font: 14px/1.6 Arial, sans-serif; color: var(--muted); }
+.staff-register-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(220px, 1fr); gap: 32px; align-items: start; }
+.staff-workspace #staff-form { max-width: none; }
+.staff-workspace #staff-form fieldset { gap: 20px; }
+.staff-workspace #staff-form input, .staff-workspace #staff-form select { width: 100%; min-width: 0; }
+.staff-workspace #staff-form button { justify-self: start; }
+.staff-access-note { padding: 24px; border: 1px solid #cce4d8; border-radius: 12px; background: linear-gradient(145deg, #e8f5ed, #f3f8e9); }
+.staff-access-note h3 { margin: 0 0 20px; font-size: 19px; }
+.staff-access-note p { font: 13px/1.7 Arial, sans-serif; color: #536e65; }
+.staff-access-note strong { color: #087653; }
+.staff-account-list { display: grid; gap: 14px; }
+.staff-workspace .staff-account { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: #fffefb; overflow-wrap: anywhere; }
+.staff-workspace .staff-account > p { margin-top: 0; line-height: 1.6; }
+.staff-workspace .staff-delete { color: #a52e25; }
+.staff-balance-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.staff-balance-card { padding: 22px; border: 1px solid var(--line); border-top: 3px solid #43c88d; border-radius: 12px; background: #fffefb; min-width: 0; }
+.staff-balance-card h3 { margin: 0 0 18px; font-size: 22px; overflow-wrap: anywhere; }
+.staff-balance-card p { font: 13px/1.65 Arial, sans-serif; color: #536e65; }
+.staff-balance-card strong { color: var(--ink); }
+.staff-balance-card input { width: 100%; min-width: 0; }
+.staff-balance-card .agent-payment-form { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+.staff-payment-history { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 20px; }
+.staff-payment-history summary { cursor: pointer; color: #087653; font: 600 13px/1.6 Arial, sans-serif; }
+.staff-notice { padding: 14px 18px; margin: 0 0 20px; border: 1px solid #cce4d8; border-radius: 10px; background: #e8f5ed; color: #087653; font: 14px/1.5 Arial, sans-serif; }
+.staff-empty { padding: 32px 20px; border: 1px dashed var(--line); border-radius: 12px; text-align: center; grid-column: 1 / -1; }
+.staff-empty h3 { margin: 0 0 10px; }
+.staff-empty p { margin: 0; color: var(--muted); font: 14px/1.6 Arial, sans-serif; }
+@media (max-width: 1100px) { .staff-register-layout, .staff-balance-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .staff-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .staff-tab { justify-content: flex-start; font-size: 12px; }
+  .staff-scope { margin-top: 12px; }
+  .staff-workspace .staff-tab-panel { padding: 18px; }
+  .staff-register-layout { gap: 24px; }
+  .staff-balance-card, .staff-access-note { padding: 18px; }
+  .staff-workspace #staff-form button { width: 100%; justify-content: center; }
+}
 .agent-payment-void-form { max-width: 520px; margin: 12px 0 20px; }
 .agent-payment-void-form fieldset, .agent-payment-void-form label { display: grid; gap: 12px; border: 0; padding: 0; min-width: 0; }
 .agent-payment-void-form input { padding: 12px; width: 100%; border: 1px solid var(--line); border-radius: 8px; }

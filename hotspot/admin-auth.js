@@ -18,6 +18,7 @@ const validEmail = (value) => value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$
 const validPassword = (value) => typeof value === 'string' && value.length >= 12 && value.length <= 256;
 
 function recoveryEmailConfigured(env) {
+    if (env.EMAIL_PROVIDER === 'gmail') return require('./gmail-email').gmailConfigured(env);
     if (env.EMAIL_PROVIDER === 'sendgrid' || (!env.EMAIL_PROVIDER && env.SENDGRID_API_KEY)) {
         return Boolean(env.SENDGRID_API_KEY?.trim() && validEmail(emailOf(env.EMAIL_FROM)));
     }
@@ -27,6 +28,7 @@ function recoveryEmailConfigured(env) {
 
 async function deliverRecoveryEmail(env, mail, request = fetch) {
     if (!recoveryEmailConfigured(env)) throw new Error('Recovery email is not configured.');
+    if (env.EMAIL_PROVIDER === 'gmail') return require('./gmail-email').deliverGmailEmail(env, mail, request);
     if (env.EMAIL_PROVIDER === 'sendgrid' || (!env.EMAIL_PROVIDER && env.SENDGRID_API_KEY)) {
         const response = await request('https://api.sendgrid.com/v3/mail/send', {
             method: 'POST',

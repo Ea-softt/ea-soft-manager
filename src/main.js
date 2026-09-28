@@ -61,6 +61,7 @@ let agentBusy = false;
 let agentRequestId = null;
 let agentResult = null;
 let staffMessage = '';
+let staffTab = 'register';
 let loginMode = 'login';
 let recoveryEmail = '';
 let authGeneration = 0;
@@ -117,6 +118,7 @@ function signOut() {
   syncError = '';
   accountEmail = '';
   accountRole = 'manager';
+  staffTab = 'register';
   staffRecords = [];
   agentLedger = { sales: [], payments: [], amountDue: 0 };
   agentResult = null;
@@ -476,17 +478,67 @@ async function loadAgentManagement() {
 }
 function renderAgentManagement() {
   const ids = [...new Set([...staffRecords.filter((user) => user.role === 'agent').map((user) => user.id), ...agentLedger.sales.map((sale) => sale.agentId)])];
-  return `<h1>Agents & staff</h1><p>Register staff here. Everyone signs in on the same login page with their own email and password.</p><p role="status">${escapeText(staffMessage)}</p><section class="panel settings-panel"><h2>Register account</h2><form id="staff-form"><fieldset><label>Name<input name="name" required maxlength="100" /></label><label>Email<input name="email" type="email" required maxlength="254" autocomplete="off" /></label><label>Initial password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Role<select name="role"><option value="agent">Agent — create vouchers only</option><option value="manager">Manager — full management access</option></select></label><button class="primary-button">Register account</button></fieldset><p class="staff-error" role="alert"></p></form></section><section class="panel"><h2>Registered staff</h2>${renderStaffAccounts()}</section><section class="panel"><h2>Agent balances</h2><p>${selectedTown === 'all' ? 'Select a town to view agent vouchers and record payments.' : 'Balances and payments below are for the selected town.'}</p>${selectedTown === 'all' ? '' : ids.map((id) => {
-    const sales = agentLedger.sales.filter((sale) => sale.agentId === id);
-    const payments = agentLedger.payments.filter((payment) => payment.agentId === id);
-    const balance = agentBalance(sales, payments);
-    return `<article><h3>${escapeText(staffRecords.find((user) => user.id === id)?.name || sales[0]?.agentName || id)}</h3>${agentBalanceSummary(sales, payments)}${balance.amountDue > 0 ? `<form class="agent-payment-form" data-agent="${escapeText(id)}"><fieldset><label>Amount actually received from agent<input name="amount" type="number" min="0.01" max="${balance.amountDue.toFixed(2)}" step="0.01" required /></label><p>Record money only after you receive it. This reduces the remaining balance.</p><button class="secondary-button">Record payment received</button></fieldset><p class="staff-error" role="alert"></p></form>` : ''}${agentPaymentHistory(payments, true)}</article>`;
-  }).join('')}</section>${selectedTown !== 'all' ? `<section class="panel"><h2>Agent voucher history</h2>${agentSalesTable(agentLedger.sales, true)}</section>` : ''}`;
+  const tabs = [
+    ['register', 'Plus', 'Register account'],
+    ['staff', 'Users', 'Registered staff'],
+    ['balances', 'CalendarDays', 'Agent balances'],
+    ['history', 'Tags', 'Agent voucher history']
+  ];
+  const panel = (id) => `id="staff-panel-${id}" role="tabpanel" aria-labelledby="staff-tab-${id}" data-staff-panel="${id}" ${staffTab !== id ? 'hidden' : ''}`;
+  const townName = towns.find((town) => town.id === selectedTown)?.name || 'Selected town';
+  const townNotice = '<div class="staff-empty"><h3>Select a town</h3><p>Choose a town from the selector above to view its agent balances and voucher history.</p></div>';
+  return `<div class="staff-workspace">
+    <div class="heading-row staff-heading"><div><p class="eyebrow">TEAM MANAGEMENT</p><h1>Agents & staff</h1><p class="subhead">Manage your team, track agent sales, and record payments.</p></div><span class="staff-scope">${icon('Users', 16)} ${staffRecords.length} registered staff</span></div>
+    <div class="staff-tabs" role="tablist" aria-label="Agents and staff sections">${tabs.map(([id, symbol, label]) => `<button type="button" class="staff-tab ${staffTab === id ? 'active' : ''}" id="staff-tab-${id}" role="tab" aria-selected="${staffTab === id}" aria-controls="staff-panel-${id}" tabindex="${staffTab === id ? '0' : '-1'}" data-staff-tab="${id}">${icon(symbol, 18)}<span>${label}</span></button>`).join('')}</div>
+    ${staffMessage ? `<p class="staff-notice" role="status">${escapeText(staffMessage)}</p>` : ''}
+    <section class="panel staff-tab-panel staff-registration" ${panel('register')}>
+      <div class="staff-panel-heading"><p class="eyebrow">GROW YOUR TEAM</p><h2>Register account</h2><p>Create an account with the access this person needs.</p></div>
+      <div class="staff-register-layout"><form id="staff-form" class="settings-panel"><fieldset>
+        <label>Name<input name="name" required maxlength="100" autocomplete="name" placeholder="Full name" /></label>
+        <label>Email<input name="email" type="email" required maxlength="254" autocomplete="off" placeholder="name@example.com" /></label>
+        <label>Initial password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="At least 12 characters" /></label>
+        <label>Role<select name="role"><option value="agent">Agent - create vouchers only</option><option value="manager">Manager - full management access</option></select></label>
+        <button class="primary-button">${icon('Plus', 16)} Register account</button></fieldset><p class="staff-error" role="alert"></p></form>
+        <aside class="staff-access-note"><h3>Choose the right access</h3><p><strong>Agent</strong><br>Create customer vouchers and view their own sales and payments.</p><p><strong>Manager</strong><br>Manage staff, plans, vouchers, and payments.</p><p>Everyone uses the same sign-in page with their own email and password.</p></aside></div>
+    </section>
+    <section class="panel staff-tab-panel" ${panel('staff')}><div class="staff-panel-heading"><p class="eyebrow">YOUR TEAM</p><h2>Registered staff</h2><p>Update roles or remove access to a staff account.</p></div><div class="staff-account-list">${renderStaffAccounts()}</div></section>
+    <section class="panel staff-tab-panel" ${panel('balances')}><div class="staff-panel-heading"><p class="eyebrow">PAYMENTS & BALANCES</p><h2>Agent balances</h2><p>${selectedTown === 'all' ? 'Balances are shown for one town at a time.' : `Sales and payments for ${escapeText(townName)}.`}</p></div>${selectedTown === 'all' ? townNotice : `<div class="staff-balance-grid">${ids.map((id) => {
+      const sales = agentLedger.sales.filter((sale) => sale.agentId === id);
+      const payments = agentLedger.payments.filter((payment) => payment.agentId === id);
+      const balance = agentBalance(sales, payments);
+      return `<article class="staff-balance-card"><h3>${escapeText(staffRecords.find((user) => user.id === id)?.name || sales[0]?.agentName || id)}</h3>${agentBalanceSummary(sales, payments)}${balance.amountDue > 0 ? `<form class="agent-payment-form" data-agent="${escapeText(id)}"><fieldset><label>Amount actually received from agent<input name="amount" type="number" min="0.01" max="${balance.amountDue.toFixed(2)}" step="0.01" required /></label><p>Record money only after you receive it. This reduces the remaining balance.</p><button class="secondary-button">Record payment received</button></fieldset><p class="staff-error" role="alert"></p></form>` : ''}<details class="staff-payment-history"><summary>Payment history</summary>${agentPaymentHistory(payments, true)}</details></article>`;
+    }).join('') || '<div class="staff-empty"><h3>No agent balances yet</h3><p>Register an agent to start tracking their voucher sales.</p></div>'}</div>`}</section>
+    <section class="panel staff-tab-panel" ${panel('history')}><div class="staff-panel-heading"><p class="eyebrow">SALES RECORDS</p><h2>Agent voucher history</h2><p>${selectedTown === 'all' ? 'Voucher history is shown for one town at a time.' : `All agent voucher sales for ${escapeText(townName)}.`}</p></div>${selectedTown === 'all' ? townNotice : agentSalesTable(agentLedger.sales, true)}</section>
+  </div>`;
 }
 function renderStaffAccounts() {
   return staffRecords.map((user) => `<article class="staff-account"><p><strong>${escapeText(user.name)}</strong> · ${escapeText(user.email)} · ${escapeText(user.role)}</p>${user.email === accountEmail ? '<p>Your account</p>' : `<form class="staff-role-form" data-staff="${escapeText(user.id)}"><fieldset><label>Role<select name="role"><option value="agent" ${user.role === 'agent' ? 'selected' : ''}>Agent</option><option value="manager" ${user.role === 'manager' ? 'selected' : ''}>Manager</option></select></label><button class="secondary-button" type="submit">Save role</button><button class="secondary-button staff-delete" type="button">Delete account</button></fieldset><p class="staff-error" role="alert"></p></form>`}</article>`).join('') || '<p>No additional staff registered.</p>';
 }
 function bindAgentManagement() {
+  const staffTabs = [...document.querySelectorAll('[data-staff-tab]')];
+  function selectStaffTab(tab) {
+    if (pendingRequests) return;
+    staffTab = tab.dataset.staffTab;
+    staffTabs.forEach((item) => {
+      const selected = item === tab;
+      item.classList.toggle('active', selected);
+      item.setAttribute('aria-selected', String(selected));
+      item.tabIndex = selected ? 0 : -1;
+    });
+    document.querySelectorAll('[data-staff-panel]').forEach((panel) => { panel.hidden = panel.dataset.staffPanel !== staffTab; });
+    tab.focus();
+  }
+  staffTabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => selectStaffTab(tab));
+    tab.addEventListener('keydown', (event) => {
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % staffTabs.length;
+      if (event.key === 'ArrowLeft') next = (index + staffTabs.length - 1) % staffTabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = staffTabs.length - 1;
+      if (next !== undefined) { event.preventDefault(); selectStaffTab(staffTabs[next]); }
+    });
+  });
   document.querySelectorAll('.staff-role-form').forEach((form) => {
     const user = staffRecords.find((item) => item.id === form.dataset.staff);
     if (!user) return;

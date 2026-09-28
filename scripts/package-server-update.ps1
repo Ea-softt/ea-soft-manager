@@ -6,9 +6,9 @@ $artifactDirectory = Join-Path $projectDirectory 'artifacts'
 $stagingDirectory = Join-Path $artifactDirectory $bundleName
 New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
 $files = @(
-    'server.js', 'admin-auth.js', 'agent-portal.js', 'terminal.js', 'towns.js', 'shared-vouchers.js',
+    'server.js', 'admin-auth.js', 'gmail-email.js', 'agent-portal.js', 'terminal.js', 'towns.js', 'shared-vouchers.js',
     'package.json', 'package-lock.json', 'towns.example.json',
-    'MULTI-TOWN.md', 'SHARED-VOUCHERS.md', 'DATA-CONSUMPTION.md', 'AGENTS-PORTAL.md',
+    'MULTI-TOWN.md', 'SHARED-VOUCHERS.md', 'DATA-CONSUMPTION.md', 'AGENTS-PORTAL.md', 'GMAIL-SETUP.md',
     'radius/ea-rest.conf', 'radius/ea-hotspot.conf', 'radius/clients.example.conf'
 )
 foreach ($relative in $files) {
