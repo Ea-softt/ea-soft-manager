@@ -2,6 +2,8 @@
 
 Managers open **Agents & staff**, enter a name, email, initial password (at least 12 characters), and choose Agent or Manager. Each person uses their own credentials on the existing login page. Manager accounts have full management access. Agent accounts open the restricted voucher portal automatically. Existing owner credentials continue to work.
 
+Under **Registered staff**, managers can select Agent or Manager and click **Save role**, or use **Delete account**. A role change requires the affected person to sign in again; deletion removes their login access. Voucher history, payment receipts, and outstanding balances are retained under the same agent ID. The original owner account is protected. Managers cannot change their own role or delete their own account; another manager can manage those registered accounts.
+
 Agents choose a town, select an existing plan (including custom plans created by a manager), and enter the customer phone number. The server generates the three-digit username and password and uses the plan price. Agents cannot edit prices, credentials, plans, or other agents' records. Voucher expiry still starts at first login. SMS uses that town's existing provider configuration; the portal shows whether submission succeeded and displays the voucher if SMS fails. Submission is not a delivery receipt.
 
 Each agent sees their voucher history and amount owed for the selected town. Managers see each agent's sales and record payments received in **Agents & staff**. Amount owed = recorded voucher sales minus payments received; no commission is deducted. Sales and attribution survive voucher deletion. Existing manager amount corrections also update the agent balance. Payment records include the receiving manager and timestamp.

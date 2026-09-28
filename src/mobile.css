@@ -7,6 +7,10 @@ main:has(#agent-signout) .panel, .panel:has(#staff-form), .panel:has(.agent-paym
 #agent-voucher-form select, #staff-form select, #agent-town, .agent-payment-form input { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fffdf7; color: var(--ink); font-size: 16px; max-width: 100%; }
 .agent-payment-form { max-width: 420px; margin-bottom: 20px; }
 .agent-payment-form label { display: grid; gap: 8px; }
+.staff-account { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.staff-role-form fieldset { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; border: 0; padding: 0; margin: 0; }
+.staff-role-form label { display: grid; gap: 8px; }
+.staff-role-form select { padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: #fffdf7; color: var(--ink); }
 .agent-payment-void-form { max-width: 520px; margin: 12px 0 20px; }
 .agent-payment-void-form fieldset, .agent-payment-void-form label { display: grid; gap: 12px; border: 0; padding: 0; min-width: 0; }
 .agent-payment-void-form input { padding: 12px; width: 100%; border: 1px solid var(--line); border-radius: 8px; }

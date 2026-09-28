@@ -66,10 +66,11 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
     }
     const staffFile = file + '.staff.json';
     let staff = fs.existsSync(staffFile) ? JSON.parse(fs.readFileSync(staffFile, 'utf8')) : [];
-    function saveStaff() {
+    function saveStaff(next = staff) {
         fs.mkdirSync(path.dirname(staffFile), { recursive: true });
-        fs.writeFileSync(staffFile + '.tmp', JSON.stringify(staff), { mode: 0o600 });
+        fs.writeFileSync(staffFile + '.tmp', JSON.stringify(next), { mode: 0o600 });
         fs.renameSync(staffFile + '.tmp', staffFile);
+        staff = next;
     }
     const publicUser = ({ id, name, email, role }) => ({ id, name, email, role });
     const sessions = new Map();
@@ -105,6 +106,31 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
     requireAdmin.requireSession = requireSession;
     app.use('/api/admin', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
     app.get('/api/admin/staff', requireAdmin, (_req, res) => res.json({ success: true, staff: staff.map(publicUser) }));
+    function revokeStaffSessions(id) {
+        for (const [key, session] of sessions) if (session.user.id === id) sessions.delete(key);
+    }
+    app.put('/api/admin/staff/:id/role', requireAdmin, (req, res) => {
+        const role = req.body?.role;
+        if (!['agent', 'manager'].includes(role)) return res.status(400).json({ message: 'Choose Agent or Manager.' });
+        if (req.params.id === 'owner' || req.params.id === req.staff.id) return res.status(400).json({ message: 'You cannot change your own role or the original owner account.' });
+        const user = staff.find((item) => item.id === req.params.id);
+        if (!user) return res.status(404).json({ message: 'Staff account not found.' });
+        const updated = { ...user, role };
+        if (user.role !== role) {
+            saveStaff(staff.map((item) => item.id === user.id ? updated : item));
+            revokeStaffSessions(user.id);
+        }
+        res.json({ success: true, user: publicUser(updated) });
+    });
+    app.delete('/api/admin/staff/:id', requireAdmin, (req, res) => {
+        if (req.params.id === 'owner' || req.params.id === req.staff.id) return res.status(400).json({ message: 'You cannot delete your own account or the original owner account.' });
+        const user = staff.find((item) => item.id === req.params.id);
+        if (!user) return res.status(404).json({ message: 'Staff account not found.' });
+        saveStaff(staff.filter((item) => item.id !== user.id));
+        revokeStaffSessions(user.id);
+        if (reset?.email === user.email) reset = null;
+        res.json({ success: true });
+    });
     app.post('/api/admin/staff', requireAdmin, rateLimit, (req, res) => {
         const { name, password, role } = req.body || {};
         const email = emailOf(req.body?.email);

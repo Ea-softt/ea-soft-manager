@@ -476,14 +476,37 @@ async function loadAgentManagement() {
 }
 function renderAgentManagement() {
   const ids = [...new Set([...staffRecords.filter((user) => user.role === 'agent').map((user) => user.id), ...agentLedger.sales.map((sale) => sale.agentId)])];
-  return `<h1>Agents & staff</h1><p>Register staff here. Everyone signs in on the same login page with their own email and password.</p><p role="status">${escapeText(staffMessage)}</p><section class="panel settings-panel"><h2>Register account</h2><form id="staff-form"><fieldset><label>Name<input name="name" required maxlength="100" /></label><label>Email<input name="email" type="email" required maxlength="254" autocomplete="off" /></label><label>Initial password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Role<select name="role"><option value="agent">Agent — create vouchers only</option><option value="manager">Manager — full management access</option></select></label><button class="primary-button">Register account</button></fieldset><p class="staff-error" role="alert"></p></form></section><section class="panel"><h2>Registered staff</h2>${staffRecords.map((user) => `<p>${escapeText(user.name)} · ${escapeText(user.email)} · ${escapeText(user.role)}</p>`).join('') || '<p>No additional staff registered.</p>'}</section><section class="panel"><h2>Agent balances</h2><p>${selectedTown === 'all' ? 'Select a town to view agent vouchers and record payments.' : 'Balances and payments below are for the selected town.'}</p>${selectedTown === 'all' ? '' : ids.map((id) => {
+  return `<h1>Agents & staff</h1><p>Register staff here. Everyone signs in on the same login page with their own email and password.</p><p role="status">${escapeText(staffMessage)}</p><section class="panel settings-panel"><h2>Register account</h2><form id="staff-form"><fieldset><label>Name<input name="name" required maxlength="100" /></label><label>Email<input name="email" type="email" required maxlength="254" autocomplete="off" /></label><label>Initial password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Role<select name="role"><option value="agent">Agent — create vouchers only</option><option value="manager">Manager — full management access</option></select></label><button class="primary-button">Register account</button></fieldset><p class="staff-error" role="alert"></p></form></section><section class="panel"><h2>Registered staff</h2>${renderStaffAccounts()}</section><section class="panel"><h2>Agent balances</h2><p>${selectedTown === 'all' ? 'Select a town to view agent vouchers and record payments.' : 'Balances and payments below are for the selected town.'}</p>${selectedTown === 'all' ? '' : ids.map((id) => {
     const sales = agentLedger.sales.filter((sale) => sale.agentId === id);
     const payments = agentLedger.payments.filter((payment) => payment.agentId === id);
     const balance = agentBalance(sales, payments);
     return `<article><h3>${escapeText(staffRecords.find((user) => user.id === id)?.name || sales[0]?.agentName || id)}</h3>${agentBalanceSummary(sales, payments)}${balance.amountDue > 0 ? `<form class="agent-payment-form" data-agent="${escapeText(id)}"><fieldset><label>Amount actually received from agent<input name="amount" type="number" min="0.01" max="${balance.amountDue.toFixed(2)}" step="0.01" required /></label><p>Record money only after you receive it. This reduces the remaining balance.</p><button class="secondary-button">Record payment received</button></fieldset><p class="staff-error" role="alert"></p></form>` : ''}${agentPaymentHistory(payments, true)}</article>`;
   }).join('')}</section>${selectedTown !== 'all' ? `<section class="panel"><h2>Agent voucher history</h2>${agentSalesTable(agentLedger.sales, true)}</section>` : ''}`;
 }
+function renderStaffAccounts() {
+  return staffRecords.map((user) => `<article class="staff-account"><p><strong>${escapeText(user.name)}</strong> · ${escapeText(user.email)} · ${escapeText(user.role)}</p>${user.email === accountEmail ? '<p>Your account</p>' : `<form class="staff-role-form" data-staff="${escapeText(user.id)}"><fieldset><label>Role<select name="role"><option value="agent" ${user.role === 'agent' ? 'selected' : ''}>Agent</option><option value="manager" ${user.role === 'manager' ? 'selected' : ''}>Manager</option></select></label><button class="secondary-button" type="submit">Save role</button><button class="secondary-button staff-delete" type="button">Delete account</button></fieldset><p class="staff-error" role="alert"></p></form>`}</article>`).join('') || '<p>No additional staff registered.</p>';
+}
 function bindAgentManagement() {
+  document.querySelectorAll('.staff-role-form').forEach((form) => {
+    const user = staffRecords.find((item) => item.id === form.dataset.staff);
+    if (!user) return;
+    async function updateStaff(deleting) {
+      const role = form.elements.role.value;
+      if (!deleting && role === user.role) return;
+      if (deleting && !confirm(`Delete ${user.name}'s account? They will lose login access. Voucher and payment history will be kept.`)) return;
+      form.querySelector('fieldset').disabled = true;
+      try {
+        const path = `/api/admin/staff/${encodeURIComponent(user.id)}`;
+        const result = await apiRequest(deleting ? path : `${path}/role`, deleting ? { method: 'DELETE' } : { method: 'PUT', body: JSON.stringify({ role }) });
+        staffRecords = deleting ? staffRecords.filter((item) => item.id !== user.id) : staffRecords.map((item) => item.id === user.id ? result.user : item);
+        staffMessage = deleting ? 'Account deleted. Voucher and payment history has been kept.' : 'Role updated. This person must sign in again.';
+        if (authenticated && activeView === 'agents') render();
+      } catch (error) { form.querySelector('.staff-error').textContent = error.message; }
+      finally { form.querySelector('fieldset').disabled = false; }
+    }
+    form.addEventListener('submit', (event) => { event.preventDefault(); updateStaff(false); });
+    form.querySelector('.staff-delete').addEventListener('click', () => updateStaff(true));
+  });
   document.querySelectorAll('.agent-payment-void-form').forEach((form) => form.addEventListener('submit', async (event) => {
     event.preventDefault();
     form.querySelector('fieldset').disabled = true;
