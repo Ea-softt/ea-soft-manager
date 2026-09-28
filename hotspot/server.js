@@ -65,7 +65,9 @@ function preserveSales(sales, vouchers) {
         result.push({
             id: voucher.id, voucherId: voucher.id, paymentReference: voucher.paymentReference || null,
             amount: Number(voucher.amount) || 0, createdAt: voucher.createdAt,
-            planId: voucher.planId, source: voucher.source
+            planId: voucher.planId, source: voucher.source,
+            agentId: voucher.agentId, agentName: voucher.agentName, agentRequestId: voucher.agentRequestId,
+            username: voucher.username, phone: voucher.phone, planName: voucher.planName
         });
         known.add(key(voucher));
         voucherIds.add(voucher.id);
@@ -83,6 +85,7 @@ function readManagerData() {
     const sales = preserveSales(Array.isArray(data.sales) ? data.sales : [], vouchers);
     const result = { plans: Array.isArray(data.plans) ? data.plans : defaultPlans, vouchers, sales, deletedVoucherIds: Array.isArray(data.deletedVoucherIds) ? data.deletedVoucherIds : [], paymentAttempts: Array.isArray(data.paymentAttempts) ? data.paymentAttempts : [] };
     result.dataUsage = data.dataUsage || { startedAt: Date.now(), days: [] };
+    result.agentPayments = Array.isArray(data.agentPayments) ? data.agentPayments : [];
     // Persist migration before a delete or status update can change the voucher list.
     if (!data.dataUsage || !Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
     return result;
@@ -103,6 +106,7 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
     // Async router operations may hold old snapshots. Always retain the latest sales.
     const latest = readManagerData();
     data.dataUsage = latest.dataUsage;
+    data.agentPayments = latest.agentPayments || [];
     if (!updatePlans) data.plans = latest.plans;
     const latestVouchers = new Map(latest.vouchers.map((item) => [item.id, item]));
     data.vouchers = data.vouchers.map((item) => {
@@ -150,6 +154,12 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
 
 const { installAdminAuth } = require('./admin-auth');
 const requireAdminToken = sharedRequireAdmin || installAdminAuth(app, { env });
+require('./agent-portal').installAgentPortal(app, {
+    requireAdmin: requireAdminToken, readManagerData, saveManagerData, writeManagerData,
+    generateVoucherUsername, generateVoucherPassword, profileNameForPlan, planDurationMs,
+    createMikroTikUser, sendVoucherSms, sharedVouchers,
+    getReservations: () => initializingVoucherUsernames
+});
 // An incomplete optional Terminal deployment must not take login or payments down.
 try {
     require('./terminal').installTerminal(app, requireAdminToken, { env });

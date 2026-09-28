@@ -54,6 +54,13 @@ let financeAvailable = false;
 let hasLoadedState = false;
 let syncError = '';
 let accountEmail = '';
+let accountRole = 'manager';
+let staffRecords = [];
+let agentLedger = { sales: [], payments: [], amountDue: 0 };
+let agentBusy = false;
+let agentRequestId = null;
+let agentResult = null;
+let staffMessage = '';
 let loginMode = 'login';
 let recoveryEmail = '';
 let authGeneration = 0;
@@ -109,6 +116,11 @@ function signOut() {
   hasLoadedState = false;
   syncError = '';
   accountEmail = '';
+  accountRole = 'manager';
+  staffRecords = [];
+  agentLedger = { sales: [], payments: [], amountDue: 0 };
+  agentResult = null;
+  agentRequestId = null;
   loginMode = 'login';
   authGeneration += 1;
   state.settings.adminToken = '';
@@ -165,6 +177,7 @@ function renderLogin() {
         }
         state.settings.adminToken = result.token;
         accountEmail = result.email;
+        accountRole = result.role || 'manager';
         authenticated = true;
         recoveryEmail = '';
         persist();
@@ -202,6 +215,7 @@ async function refreshBiometricControls(form) {
         if (document.querySelector('#admin-login-form') !== form || loginMode !== 'login') return;
         state.settings.adminToken = result.token;
         accountEmail = result.email;
+        accountRole = result.role || 'manager';
         authenticated = true;
         persist();
         render();
@@ -218,6 +232,10 @@ async function refreshBiometricControls(form) {
 function apiUrl(pathname = '') { return `${state.settings.apiUrl.trim().replace(/\/+$/, '').replace(/\/api$/i, '')}${pathname}`; }
 function hasRemoteApi() { return Boolean(state.settings.apiUrl && state.settings.adminToken); }
 async function apiRequest(pathname, options = {}) {
+  if (/^\/api\/(agent\/(state|vouchers)|admin\/(agents|agent-payments(?:\/[^/]+\/void)?))$/.test(pathname)) {
+    if (selectedTown === 'all') throw new Error('Select a town first.');
+    pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
+  }
   const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment)$/;
   if (townRoutes.test(pathname)) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
@@ -269,6 +287,18 @@ async function performApiRequest(pathname, options = {}) {
 }
 async function syncRemoteState() {
   if (!hasRemoteApi()) throw new Error('Sign in to connect to your workspace.');
+  if (accountRole === 'agent') {
+    const town = selectedTown;
+    if (!towns.length) towns = (await apiRequest('/api/agent/towns')).towns;
+    const remote = await apiRequest('/api/agent/state');
+    if (selectedTown !== town) return;
+    state.plans = remote.plans;
+    state.users = remote.users;
+    agentLedger = remote;
+    hasLoadedState = true;
+    syncError = '';
+    return;
+  }
   const town = selectedTown;
   const generation = authGeneration;
   if (!towns.length) {
@@ -303,6 +333,7 @@ async function syncRemoteState() {
   syncError = remote.warning || '';
   state.plans = remote.plans;
   state.users = remote.users;
+  if (activeView === 'agents') await loadAgentManagement();
   persist();
 }
 function money(value) { return `${state.settings.currency}${Number(value).toFixed(2)}`; }
@@ -340,6 +371,7 @@ function icon(name, size = 18) {
 
 function render() {
   if (!authenticated) { renderLogin(); return; }
+  if (accountRole === 'agent') { renderAgentPortal(); return; }
   for (const id of selectedVoucherIds) { if (!state.users.some((user) => user.id === id)) selectedVoucherIds.delete(id); }
   refreshStatus();
   const activeUsers = state.users.filter((user) => user.status === 'active').length;
@@ -353,6 +385,7 @@ function render() {
         <nav class="nav-list">
           ${navItem('overview', 'LayoutDashboard', 'Overview')}
           ${navItem('users', 'Users', 'Vouchers & users')}
+          ${navItem('agents', 'Users', 'Agents & staff')}
           ${navItem('plans', 'Tags', 'Plans & pricing')}
           ${navItem('finances', 'CalendarDays', 'Finances')}
           ${navItem('consumption', 'Database', 'Data consumption')}
@@ -370,6 +403,129 @@ function render() {
   createIcons({ icons: { LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } });
   bindEvents();
   bindTownSettings();
+  bindAgentManagement();
+}
+
+function agentSalesTable(sales, showAgent = false) {
+  const vouchers = new Map(state.users.map((voucher) => [voucher.id, voucher]));
+  return `<div class="table-wrap"><table><thead><tr>${showAgent ? '<th>Agent</th>' : ''}<th>Created</th><th>${showAgent ? 'Voucher' : 'Username / Password'}</th><th>Plan</th><th>Customer number</th><th>Amount</th></tr></thead><tbody>${sales.map((sale) => `<tr>${showAgent ? `<td>${escapeText(sale.agentName || sale.agentId)}</td>` : ''}<td>${escapeText(formatDate(sale.createdAt))}</td><td>${escapeText(sale.username || sale.voucherId)}${showAgent ? '' : `<br><small>Password: ${escapeText(vouchers.get(sale.voucherId || sale.id)?.password ?? 'Unavailable (voucher deleted)')}</small>`}</td><td>${escapeText(sale.planName || getPlan(sale.planId)?.name || sale.planId)}</td><td>${escapeText(sale.phone || '')}</td><td>${money(sale.amount)}</td></tr>`).join('') || `<tr><td colspan="${showAgent ? 6 : 5}">No agent vouchers yet.</td></tr>`}</tbody></table></div>`;
+}
+function agentBalance(sales, payments) {
+  const salesCents = sales.reduce((sum, sale) => sum + Math.round(Number(sale.amount) * 100), 0);
+  const receivedCents = payments.filter((payment) => !payment.voidedAt).reduce((sum, payment) => sum + Math.round(Number(payment.amount) * 100), 0);
+  return { totalSales: salesCents / 100, totalReceived: receivedCents / 100,
+    amountDue: Math.max(0, salesCents - receivedCents) / 100, creditBalance: Math.max(0, receivedCents - salesCents) / 100 };
+}
+function agentBalanceSummary(sales, payments) {
+  const balance = agentBalance(sales, payments);
+  return `<p>${sales.length} vouchers</p><p>Total sales payable to manager: <strong>${money(balance.totalSales)}</strong></p><p>Already received by manager: <strong>${money(balance.totalReceived)}</strong></p><p>Remaining balance to pay: <strong>${money(balance.amountDue)}</strong></p>${balance.creditBalance ? `<p>Agent credit (received above current sales): <strong>${money(balance.creditBalance)}</strong></p>` : ''}<p>The full sales amount belongs to the manager. Only payments recorded as received reduce the remaining balance.</p>`;
+}
+function agentPaymentHistory(payments, canCorrect = false) {
+  return payments.map((payment) => `<article><p>${payment.voidedAt ? 'Reversed payment' : 'Received by manager'}: ${money(payment.amount)} on ${escapeText(formatDate(payment.createdAt))}</p>${payment.voidedAt ? `<p>Reversed on ${escapeText(formatDate(payment.voidedAt))}: ${escapeText(payment.voidReason || '')}. Excluded from received total.</p>` : canCorrect ? `<details><summary>Correct a payment entered by mistake</summary><form class="agent-payment-void-form" data-payment="${escapeText(payment.id)}"><fieldset><label>Reason<input name="reason" required maxlength="300" placeholder="Why was this payment entered incorrectly?" /></label><button class="secondary-button">Reverse this payment record</button></fieldset><p class="staff-error" role="alert"></p></form></details>` : ''}</article>`).join('') || '<p>No payments recorded.</p>';
+}
+function renderAgentPortal() {
+  document.querySelector('#app').innerHTML = `<main class="main-content"><header class="topbar"><strong>EA-Soft Agent</strong><button class="secondary-button" id="agent-signout" ${agentBusy ? 'disabled' : ''}>Sign out</button></header><section class="page-wrap"><h1>Create customer voucher</h1><p>${escapeText(accountEmail)}</p><label>Town<select id="agent-town" ${agentBusy ? 'disabled' : ''}>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label>${syncError ? `<p role="alert">${escapeText(syncError)}</p>` : ''}<section class="panel"><h2>Payments to manager</h2><p>For the selected town.</p>${hasLoadedState ? agentBalanceSummary(agentLedger.sales, agentLedger.payments) : '<p>Loading...</p>'}<form id="agent-voucher-form" class="settings-panel"><fieldset ${agentBusy || !hasLoadedState ? 'disabled' : ''}><label>Customer plan<select name="planId" required>${state.plans.map((plan) => `<option value="${escapeText(plan.id)}">${escapeText(plan.name)} — ${money(plan.price)}</option>`).join('')}</select></label><label>Customer phone number<input name="phone" type="tel" required maxlength="16" placeholder="0241234567" autocomplete="tel" /></label><p>The voucher code and password are generated automatically. The selected plan sets the price.</p><button class="primary-button" type="submit">${agentBusy ? 'Creating voucher…' : 'Create voucher & send SMS'}</button></fieldset><p id="agent-error" role="alert"></p></form></section>${agentResult ? `<section class="panel" role="status"><h2>Voucher created — ${money(agentResult.amount)}</h2><p>Username: <strong>${escapeText(agentResult.username)}</strong> · Password: <strong>${escapeText(agentResult.password)}</strong></p><p>${agentResult.smsStatus === 'submitted' ? 'SMS submitted to the provider.' : 'SMS was not confirmed. Give these voucher details to the customer.'}</p></section>` : ''}<section class="panel"><h2>Your vouchers</h2>${agentSalesTable(agentLedger.sales)}</section><section class="panel"><h2>Payments received by manager</h2>${agentPaymentHistory(agentLedger.payments)}</section></section></main>`;
+  document.querySelector('#agent-signout')?.addEventListener('click', signOut);
+  document.querySelector('#agent-town')?.addEventListener('change', async (event) => {
+    selectedTown = event.target.value;
+    agentResult = null;
+    agentRequestId = null;
+    hasLoadedState = false;
+    state.plans = [];
+    agentLedger = { sales: [], payments: [], amountDue: 0 };
+    render();
+    await refreshVoucherStatus();
+  });
+  document.querySelector('#agent-voucher-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (agentBusy) return;
+    const form = event.target;
+    const payload = { planId: form.elements.planId.value, phone: form.elements.phone.value.trim() };
+    const fingerprint = JSON.stringify([selectedTown, payload]);
+    if (agentRequestId?.fingerprint !== fingerprint) agentRequestId = { fingerprint, id: crypto.randomUUID() };
+    payload.requestId = agentRequestId.id;
+    agentBusy = true;
+    form.querySelector('fieldset').disabled = true;
+    document.querySelector('#agent-town').disabled = true;
+    document.querySelector('#agent-signout').disabled = true;
+    try {
+      const result = await apiRequest('/api/agent/vouchers', { method: 'POST', body: JSON.stringify(payload) });
+      agentResult = result.user;
+      agentRequestId = null;
+      try { await syncRemoteState(); } catch (error) { syncError = error.message; }
+      agentBusy = false;
+      render();
+    } catch (error) {
+      if (!authenticated || accountRole !== 'agent') return;
+      form.querySelector('#agent-error').textContent = error.message;
+      form.querySelector('fieldset').disabled = false;
+      document.querySelector('#agent-town').disabled = false;
+      document.querySelector('#agent-signout').disabled = false;
+    } finally { agentBusy = false; }
+  });
+}
+async function loadAgentManagement() {
+  const town = selectedTown;
+  const [staff, ledger] = await Promise.all([
+    apiRequest('/api/admin/staff'),
+    town === 'all' ? Promise.resolve({ sales: [], payments: [], amountDue: 0 }) : apiRequest('/api/admin/agents')
+  ]);
+  if (town !== selectedTown) return;
+  staffRecords = staff.staff;
+  agentLedger = ledger;
+}
+function renderAgentManagement() {
+  const ids = [...new Set([...staffRecords.filter((user) => user.role === 'agent').map((user) => user.id), ...agentLedger.sales.map((sale) => sale.agentId)])];
+  return `<h1>Agents & staff</h1><p>Register staff here. Everyone signs in on the same login page with their own email and password.</p><p role="status">${escapeText(staffMessage)}</p><section class="panel settings-panel"><h2>Register account</h2><form id="staff-form"><fieldset><label>Name<input name="name" required maxlength="100" /></label><label>Email<input name="email" type="email" required maxlength="254" autocomplete="off" /></label><label>Initial password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Role<select name="role"><option value="agent">Agent — create vouchers only</option><option value="manager">Manager — full management access</option></select></label><button class="primary-button">Register account</button></fieldset><p class="staff-error" role="alert"></p></form></section><section class="panel"><h2>Registered staff</h2>${staffRecords.map((user) => `<p>${escapeText(user.name)} · ${escapeText(user.email)} · ${escapeText(user.role)}</p>`).join('') || '<p>No additional staff registered.</p>'}</section><section class="panel"><h2>Agent balances</h2><p>${selectedTown === 'all' ? 'Select a town to view agent vouchers and record payments.' : 'Balances and payments below are for the selected town.'}</p>${selectedTown === 'all' ? '' : ids.map((id) => {
+    const sales = agentLedger.sales.filter((sale) => sale.agentId === id);
+    const payments = agentLedger.payments.filter((payment) => payment.agentId === id);
+    const balance = agentBalance(sales, payments);
+    return `<article><h3>${escapeText(staffRecords.find((user) => user.id === id)?.name || sales[0]?.agentName || id)}</h3>${agentBalanceSummary(sales, payments)}${balance.amountDue > 0 ? `<form class="agent-payment-form" data-agent="${escapeText(id)}"><fieldset><label>Amount actually received from agent<input name="amount" type="number" min="0.01" max="${balance.amountDue.toFixed(2)}" step="0.01" required /></label><p>Record money only after you receive it. This reduces the remaining balance.</p><button class="secondary-button">Record payment received</button></fieldset><p class="staff-error" role="alert"></p></form>` : ''}${agentPaymentHistory(payments, true)}</article>`;
+  }).join('')}</section>${selectedTown !== 'all' ? `<section class="panel"><h2>Agent voucher history</h2>${agentSalesTable(agentLedger.sales, true)}</section>` : ''}`;
+}
+function bindAgentManagement() {
+  document.querySelectorAll('.agent-payment-void-form').forEach((form) => form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    form.querySelector('fieldset').disabled = true;
+    try {
+      await apiRequest(`/api/admin/agent-payments/${encodeURIComponent(form.dataset.payment)}/void`, { method: 'POST', body: JSON.stringify({ reason: form.elements.reason.value.trim() }) });
+      staffMessage = 'Payment record reversed. The balance now excludes that payment.';
+      await loadAgentManagement();
+      render();
+    } catch (error) { form.querySelector('.staff-error').textContent = error.message; }
+    finally { form.querySelector('fieldset').disabled = false; }
+  }));
+  document.querySelector('[data-view="agents"]')?.addEventListener('click', async () => {
+    try { await loadAgentManagement(); staffMessage = ''; } catch (error) { staffMessage = error.message; }
+    if (authenticated && activeView === 'agents') render();
+  });
+  document.querySelector('#staff-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    const body = Object.fromEntries(new FormData(form));
+    form.querySelector('fieldset').disabled = true;
+    try {
+      const result = await apiRequest('/api/admin/staff', { method: 'POST', body: JSON.stringify(body) });
+      staffRecords.push(result.user);
+      staffMessage = 'Account registered. This person can now sign in.';
+      render();
+    } catch (error) { form.querySelector('.staff-error').textContent = error.message; }
+    finally { form.querySelector('fieldset').disabled = false; }
+  });
+  document.querySelectorAll('.agent-payment-form').forEach((form) => form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const amount = Number(form.elements.amount.value);
+    if (form.dataset.paymentAmount !== String(amount)) { form.dataset.requestId = crypto.randomUUID(); form.dataset.paymentAmount = String(amount); }
+    const body = { agentId: form.dataset.agent, amount, requestId: form.dataset.requestId };
+    form.querySelector('fieldset').disabled = true;
+    try {
+      await apiRequest('/api/admin/agent-payments', { method: 'POST', body: JSON.stringify(body) });
+      staffMessage = 'Payment recorded.';
+      await loadAgentManagement();
+      render();
+    } catch (error) { form.querySelector('.staff-error').textContent = error.message; }
+    finally { form.querySelector('fieldset').disabled = false; }
+  }));
 }
 
 function renderTerminal() {
@@ -414,6 +570,7 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (activeView === 'agents') return renderAgentManagement();
   if (activeView === 'consumption') return renderDataConsumption();
   if (selectedTown === 'all') {
     if (activeView === 'finances' && townsComplete) return renderFinances();
@@ -704,6 +861,7 @@ async function switchTown(id) {
   townsComplete = false;
   townSummaries = [];
   state.users = []; state.plans = []; state.sales = []; dataUsage = null;
+  agentLedger = { sales: [], payments: [], amountDue: 0 };
   terminalDraft = ''; terminalOutput = '';
   searchTerm = ''; statusFilter = 'all';
   selectedVoucherIds.clear();
@@ -834,7 +992,7 @@ async function deleteSelectedVouchers() {
 }
 let statusRefreshRunning = false;
 async function refreshVoucherStatus() {
-  if (!authenticated || statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
+  if (!authenticated || pendingRequests || agentBusy || statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
   statusRefreshRunning = true;
   try {
     if (hasRemoteApi()) await syncRemoteState();

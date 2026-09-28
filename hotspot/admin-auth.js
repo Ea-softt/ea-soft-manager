@@ -64,6 +64,14 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
     } else if (validEmail(emailOf(env.ADMIN_EMAIL)) && env.ADMIN_PASSWORD_HASH) {
         save({ email: emailOf(env.ADMIN_EMAIL), passwordHash: env.ADMIN_PASSWORD_HASH });
     }
+    const staffFile = file + '.staff.json';
+    let staff = fs.existsSync(staffFile) ? JSON.parse(fs.readFileSync(staffFile, 'utf8')) : [];
+    function saveStaff() {
+        fs.mkdirSync(path.dirname(staffFile), { recursive: true });
+        fs.writeFileSync(staffFile + '.tmp', JSON.stringify(staff), { mode: 0o600 });
+        fs.renameSync(staffFile + '.tmp', staffFile);
+    }
+    const publicUser = ({ id, name, email, role }) => ({ id, name, email, role });
     const sessions = new Map();
     const limits = new Map();
     let reset = null;
@@ -77,35 +85,72 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
         if (++item.count > 10) return res.status(429).json({ message: 'Too many attempts. Try again in 15 minutes.' });
         next();
     }
-    function requireAdmin(req, res, next) {
+    function requireSession(req, res, next) {
         const token = (req.get('Authorization') || '').replace(/^Bearer /, '');
         const session = sessions.get(digest(token));
-        if (!session || session <= now()) {
+        if (!session || session.expires <= now()) {
             sessions.delete(digest(token));
             return res.status(401).json({ message: 'Your session has expired. Please sign in again.' });
         }
         req.sessionKey = digest(token);
+        req.staff = session.user;
         next();
     }
+    function requireAdmin(req, res, next) {
+        requireSession(req, res, () => {
+            if (req.staff.role !== 'manager') return res.status(403).json({ message: 'Manager access required.' });
+            next();
+        });
+    }
+    requireAdmin.requireSession = requireSession;
     app.use('/api/admin', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+    app.get('/api/admin/staff', requireAdmin, (_req, res) => res.json({ success: true, staff: staff.map(publicUser) }));
+    app.post('/api/admin/staff', requireAdmin, rateLimit, (req, res) => {
+        const { name, password, role } = req.body || {};
+        const email = emailOf(req.body?.email);
+        if (typeof name !== 'string' || !name.trim() || name.length > 100 || !validEmail(email) || !validPassword(password) || !['agent', 'manager'].includes(role)) {
+            return res.status(400).json({ message: 'Enter a name, valid email, role, and password of 12–256 characters.' });
+        }
+        if (email === account?.email || staff.some((user) => user.email === email)) return res.status(409).json({ message: 'This email is already registered.' });
+        const user = { id: crypto.randomUUID(), name: name.trim(), email, role, passwordHash: hashPassword(password) };
+        staff.push(user);
+        saveStaff();
+        res.status(201).json({ success: true, user: publicUser(user) });
+    });
     app.post('/api/admin/session', rateLimit, (req, res) => {
         if (!account) return res.status(503).json({ message: 'Admin account setup is required on the server.' });
-        const passwordOK = matches(req.body?.password, account.passwordHash);
-        if (!passwordOK || emailOf(req.body?.email) !== account.email) return res.status(401).json({ message: 'Email or password is incorrect.' });
-        for (const [key, expires] of sessions) if (expires <= now()) sessions.delete(key);
+        const email = emailOf(req.body?.email);
+        const user = email === account.email ? { ...account, id: 'owner', name: 'Manager', role: 'manager' } : staff.find((item) => item.email === email);
+        const passwordOK = matches(req.body?.password, user?.passwordHash || account.passwordHash);
+        if (!passwordOK || !user) return res.status(401).json({ message: 'Email or password is incorrect.' });
+        for (const [key, session] of sessions) if (session.expires <= now()) sessions.delete(key);
         if (sessions.size >= 100) sessions.delete(sessions.keys().next().value);
         const token = crypto.randomBytes(32).toString('hex');
-        sessions.set(digest(token), now() + 8 * 3600000);
-        res.json({ success: true, token, email: account.email });
+        sessions.set(digest(token), { expires: now() + 8 * 3600000, user: publicUser(user) });
+        res.json({ success: true, token, ...publicUser(user) });
     });
-    app.delete('/api/admin/session', requireAdmin, (req, res) => {
+    app.delete('/api/admin/session', requireSession, (req, res) => {
         sessions.delete(req.sessionKey);
         res.json({ success: true });
     });
     app.put('/api/admin/account', requireAdmin, rateLimit, (req, res) => {
+        if (req.staff.id !== 'owner') {
+            const user = staff.find((item) => item.id === req.staff.id);
+            if (!user || !matches(req.body?.currentPassword, user.passwordHash)) return res.status(400).json({ message: 'Current password is incorrect.' });
+            const email = emailOf(req.body?.email);
+            const password = req.body?.newPassword;
+            if (!validEmail(email) || (password && !validPassword(password))) return res.status(400).json({ message: 'Enter a valid email and a password of 12–256 characters.' });
+            if (email === account.email || staff.some((item) => item.id !== user.id && item.email === email)) return res.status(409).json({ message: 'This email is already registered.' });
+            user.email = email;
+            if (password) user.passwordHash = hashPassword(password);
+            saveStaff();
+            for (const [key, session] of sessions) if (session.user.id === user.id) sessions.delete(key);
+            return res.json({ success: true });
+        }
         if (!matches(req.body?.currentPassword, account.passwordHash)) return res.status(400).json({ message: 'Current password is incorrect.' });
         const email = emailOf(req.body?.email);
         const password = req.body?.newPassword;
+        if (staff.some((user) => user.email === email)) return res.status(409).json({ message: 'This email is already registered.' });
         if (!validEmail(email) || (password && !validPassword(password))) return res.status(400).json({ message: 'Enter a valid email and a password of 12–256 characters.' });
         save({ email, passwordHash: password ? hashPassword(password) : account.passwordHash });
         reset = null;
@@ -115,14 +160,15 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
     app.post('/api/admin/forgot-password', rateLimit, async (req, res) => {
         if (!sendMail && !recoveryEmailConfigured(env)) return res.status(503).json({ message: 'Password recovery email is not configured. Contact the administrator.' });
         const message = 'If that email matches your account, a reset code will arrive shortly. It expires in 15 minutes.';
-        if (!account || emailOf(req.body?.email) !== account.email) return res.json({ success: true, message });
+        const target = emailOf(req.body?.email) === account?.email ? account : staff.find((user) => user.email === emailOf(req.body?.email));
+        if (!target) return res.json({ success: true, message });
         if (reset && reset.sentAt + 60000 > now()) return res.json({ success: true, message });
         const code = crypto.randomBytes(6).toString('hex').toUpperCase();
-        const pending = { hash: digest(code), expires: now() + 15 * 60000, sentAt: now(), attempts: 0 };
+        const pending = { email: target.email, hash: digest(code), expires: now() + 15 * 60000, sentAt: now(), attempts: 0 };
         reset = pending;
         try {
             const deliver = sendMail || ((mail) => deliverRecoveryEmail(env, mail));
-            await deliver({ from: env.SMTP_FROM, to: account.email, subject: 'EA-Soft Manager password reset', text: `Your password reset code is: ${code}\n\nEnter this code in EA-Soft Manager within 15 minutes. If you did not request this, ignore this email.` });
+            await deliver({ from: env.SMTP_FROM, to: target.email, subject: 'EA-Soft Manager password reset', text: `Your password reset code is: ${code}\n\nEnter this code in EA-Soft Manager within 15 minutes. If you did not request this, ignore this email.` });
             res.json({ success: true, message });
         } catch {
             if (reset === pending) reset = null;
@@ -133,11 +179,18 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
         if (!reset || reset.expires <= now() || reset.attempts >= 5) return res.status(400).json({ message: 'Reset code is invalid or expired. Request a new code.' });
         reset.attempts += 1;
         const code = typeof req.body?.code === 'string' ? req.body.code.trim().toUpperCase() : '';
-        if (emailOf(req.body?.email) !== account.email || !crypto.timingSafeEqual(Buffer.from(digest(code)), Buffer.from(reset.hash))) return res.status(400).json({ message: 'Reset code is invalid or expired.' });
+        if (emailOf(req.body?.email) !== reset.email || !crypto.timingSafeEqual(Buffer.from(digest(code)), Buffer.from(reset.hash))) return res.status(400).json({ message: 'Reset code is invalid or expired.' });
         if (!validPassword(req.body?.password)) return res.status(400).json({ message: 'Use a password of 12–256 characters.' });
-        save({ email: account.email, passwordHash: hashPassword(req.body.password) });
+        if (reset.email === account.email) save({ email: account.email, passwordHash: hashPassword(req.body.password) });
+        else {
+            const user = staff.find((item) => item.email === reset.email);
+            if (!user) return res.status(400).json({ message: 'Reset code is invalid or expired.' });
+            user.passwordHash = hashPassword(req.body.password);
+            saveStaff();
+        }
+        if (reset.email === account.email) sessions.clear();
+        else for (const [key, session] of sessions) if (session.user.email === reset.email) sessions.delete(key);
         reset = null;
-        sessions.clear();
         res.json({ success: true });
     });
     return requireAdmin;

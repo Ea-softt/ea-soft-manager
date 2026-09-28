@@ -118,6 +118,10 @@ function createMultiTownApp({ env = process.env, createTownApp, authInstaller = 
         if (jobsStarted) instance.startJobs();
         res.status(201).json({ success: true, town: publicSettings(town) });
     });
+    app.get('/api/agent/towns', requireAdmin.requireSession || requireAdmin, (_req, res) => {
+        res.set('Cache-Control', 'no-store');
+        res.json({ success: true, towns: towns.map(({ id, name }) => ({ id, name })) });
+    });
     app.get('/api/admin/towns', requireAdmin, (_req, res) => {
         res.set('Cache-Control', 'no-store');
         res.json({ success: true, sharedVouchers: Boolean(shared), towns: towns.map(({ id, name }) => ({ id, name })) });
