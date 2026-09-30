@@ -385,7 +385,9 @@ function render() {
   if (accountRole === 'agent') { renderAgentPortal(); return; }
   for (const id of selectedVoucherIds) { if (!state.users.some((user) => user.id === id)) selectedVoucherIds.delete(id); }
   refreshStatus();
-  const activeUsers = state.users.filter((user) => user.status === 'active').length;
+  const voucherStatuses = state.users.map(voucherDisplayStatus);
+  const activeUsers = voucherStatuses.filter((status) => status === 'active').length;
+  const waitingUsers = voucherStatuses.filter((status) => status === 'awaiting').length;
   const revenue = financeAvailable ? state.sales.filter((sale) => !sale.reportDeletedAt).reduce((total, user) => total + Number(user.amount || 0), 0) : null;
   const expiring = state.users.filter((user) => user.status === 'active' && user.expiresAt != null && user.expiresAt - Date.now() < 86400000).length;
 
@@ -408,7 +410,7 @@ function render() {
       </aside>
       <main class="main-content">
         <header class="topbar"><label class="town-picker">Town<select id="town-select" ${pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan ? 'disabled' : ''}><option value="all" ${selectedTown === 'all' ? 'selected' : ''}>All towns</option>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' || activeView === 'backup' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' || activeView === 'backup' ? renderView({ activeUsers, waitingUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
@@ -893,10 +895,11 @@ function renderFinances() {
     <div class="stat-grid">${summary.map((item) => `<div class="stat-card ${item.color}"><span class="stat-icon">${icon('Database')}</span><p>${item.label}</p><strong>${money(item.revenue)}</strong><small>${item.count} voucher${item.count === 1 ? '' : 's'}</small></div>`).join('')}</div>
     <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Revenue by period</h2></div><div class="toolbar">${financeRangeTab('daily', 'Daily')}${financeRangeTab('weekly', 'Weekly')}${financeRangeTab('monthly', 'Monthly')}${financeRangeTab('yearly', 'Yearly')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Vouchers</th><th>Revenue</th><th>Report actions</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${bucket.count}</td><td>${money(bucket.revenue)}</td><td>${reportHistoryControls('finance', bucket.from, bucket.to)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
-function renderOverview({ activeUsers, revenue, expiring }) {
+function renderOverview({ activeUsers, waitingUsers, revenue, expiring }) {
   const recent = [...state.users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+  const revenueByStatus = overviewRevenueByStatus();
   return `<div class="heading-row"><div><p class="eyebrow">CONTROL ROOM</p><h1>Good morning, EA-Soft.</h1><p class="subhead">A clear view of your hotspot business, vouchers, and plan performance.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div>
-    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers}</strong><small>Currently valid</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small>Reported sales; cleared entries excluded</small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
+    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers + waitingUsers}</strong><small class="voucher-count-breakdown"><span>${activeUsers} active</span><span>${waitingUsers} waiting for first login</span></small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small class="voucher-count-breakdown">${revenue === null ? "" : `<span>${money(revenueByStatus.active)} from active vouchers</span><span>${money(revenueByStatus.awaiting)} from waiting for first login</span>`}<span>All reported sales; cleared entries excluded</span></small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
     <div class="content-grid"><section class="panel wide-panel"><div class="panel-head"><div><p class="eyebrow">LATEST ACTIVITY</p><h2>Recent vouchers</h2></div><button class="text-button" data-view="users">View all ${icon('ChevronDown')}</button></div>${userTable(recent)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR CATALOG</p><h2>Plans</h2></div><button class="icon-button small" data-action="new-plan">${icon('Plus')}</button></div><div class="mini-plans">${state.plans.slice(0, 5).map(planMini).join('')}</div></section></div>`;
 }
 function voucherDisplayStatus(user) {
@@ -904,6 +907,18 @@ function voucherDisplayStatus(user) {
   if (user.provisioning === 'pending') return 'pending';
   if (!user.activatedAt && !user.expiresAt) return 'awaiting';
   return 'active';
+}
+function overviewRevenueByStatus() {
+  const vouchers = new Map(state.users.map((user) => [user.id, user]));
+  const totals = { active: 0, awaiting: 0 };
+  for (const sale of state.sales) {
+    if (sale.reportDeletedAt) continue;
+    const voucher = vouchers.get(sale.voucherId || sale.id);
+    if (!voucher) continue;
+    const status = voucherDisplayStatus(voucher);
+    if (status === 'active' || status === 'awaiting') totals[status] += Number(sale.amount || 0);
+  }
+  return totals;
 }
 function voucherStatusBadge(user) {
   const status = voucherDisplayStatus(user);
