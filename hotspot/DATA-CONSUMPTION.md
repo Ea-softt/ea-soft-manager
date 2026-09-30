@@ -46,3 +46,20 @@ so delayed accounting and router outages can shift usage into a later day.
 Periods before tracking began show “Not tracked”; the initial period is partial.
 
 Validation: `node scripts/test-data-consumption.cjs`.
+
+## Delete and restore report periods
+
+Managers can select a town and use **Delete from report** on a daily, weekly,
+monthly, or yearly row. **Restore** includes that period's recorded usage again.
+Deletion hides only usage already recorded at that moment; new usage keeps
+accumulating. Customer quotas, active sessions, and router counters are unchanged.
+The original counters and an audit of manager actions remain in the town data.
+Combined town reports reflect these changes, but editing requires selecting one town.
+
+Finances has the same period controls. Sales are hidden from report totals rather
+than removed from the accounting ledger, so agent debts, payment receipts, and
+payment-reference deduplication remain intact. Restoring a period brings the sales
+back into report totals. Deleted report totals are not full lifetime totals.
+
+Deploy updated `server.js`, `towns.js`, and the frontend `dist` files together,
+then restart the backend. No router configuration changes are required.

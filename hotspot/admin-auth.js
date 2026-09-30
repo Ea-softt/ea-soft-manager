@@ -106,6 +106,7 @@ function installAdminAuth(app, { env = process.env, file = env.ADMIN_ACCOUNT_FIL
         });
     }
     requireAdmin.requireSession = requireSession;
+    requireAdmin.verifyPassword = (id, password) => matches(password, id === 'owner' ? account?.passwordHash : staff.find((user) => user.id === id)?.passwordHash);
     app.use('/api/admin', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
     app.get('/api/admin/staff', requireAdmin, (_req, res) => res.json({ success: true, staff: staff.map(publicUser) }));
     function revokeStaffSessions(id) {

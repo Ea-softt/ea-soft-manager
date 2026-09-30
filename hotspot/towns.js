@@ -5,6 +5,7 @@ const cors = require('cors');
 const crypto = require('node:crypto');
 const net = require('node:net');
 const { installAdminAuth } = require('./admin-auth');
+const { installWorkspaceBackup, applyPendingRestore } = require('./workspace-backup');
 
 function readTownConfig(env) {
     const configFile = env.TOWNS_FILE || path.join(__dirname, 'data', 'towns.json');
@@ -46,18 +47,25 @@ function loadTowns(env, config = readTownConfig(env)) {
     return towns;
 }
 
-function createMultiTownApp({ env = process.env, createTownApp, authInstaller = installAdminAuth } = {}) {
+function createMultiTownApp({ env = process.env, createTownApp, authInstaller = installAdminAuth, requestRestart } = {}) {
     let savedConfig = readTownConfig(env);
     const towns = loadTowns(env, savedConfig);
+    applyPendingRestore(env, towns);
     const radiusTownIds = towns.map((town) => town.id);
     let jobsStarted = false;
     const app = express();
+    let backupService;
     app.use(cors({ origin: env.FRONTEND_ORIGIN || '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'x-paystack-signature', 'Authorization'] }));
-    app.use(express.json({ limit: '1mb', verify: (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); } }));
+    app.use((req, res, next) => backupService?.restoring ? res.status(503).json({ message: 'Restore is pending. Restart the backend to apply the backup.' }) : next());
+    const normalJson = express.json({ limit: '1mb', verify: (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); } });
+    const backupJson = express.json({ limit: '32mb' });
+    app.use((req, res, next) => (req.path === '/api/admin/backup/preview' ? backupJson : normalJson)(req, res, next));
     const requireAdmin = authInstaller(app, { env });
     if (env.VOUCHER_AUTH_MODE && !['local', 'radius'].includes(env.VOUCHER_AUTH_MODE)) throw new Error('VOUCHER_AUTH_MODE must be local or radius.');
     const shared = env.VOUCHER_AUTH_MODE === 'radius' ? { reservations: new Set() } : null;
     const instances = new Map(towns.map((town) => [town.id, createTownApp(town.env, requireAdmin, shared)]));
+    backupService = installWorkspaceBackup(app, { env, towns, instances, requireAdmin, requestRestart,
+        stopJobs() { jobsStarted = false; for (const instance of instances.values()) instance.stopJobs(); } });
     if (shared) {
         const { createSharedVouchers, installRadiusRest } = require('./shared-vouchers');
         const service = createSharedVouchers({ instances });
@@ -136,7 +144,7 @@ function createMultiTownApp({ env = process.env, createTownApp, authInstaller = 
                 sales.push(...data.sales.map((sale) => ({ ...sale, id: `${id}:${sale.id}`, townId: id })));
                 return { id, name, available: true, vouchers: data.vouchers.length,
                     active: data.vouchers.filter((v) => v.status === 'active' && (v.expiresAt == null || v.expiresAt > Date.now())).length,
-                    revenue: data.sales.reduce((sum, sale) => sum + (Number(sale.amount) || 0), 0) };
+                    revenue: data.sales.filter((sale) => !sale.reportDeletedAt).reduce((sum, sale) => sum + (Number(sale.amount) || 0), 0) };
             } catch { return { id, name, available: false }; }
         });
         res.set('Cache-Control', 'no-store');

@@ -44,7 +44,15 @@ function runCommand(command, options, { ClientClass = Client, timeout = 20000, m
                 stream.on('data', collect);
                 stream.stderr.on('data', collect);
                 stream.on('error', (err) => finish(`SSH stream error: ${err.message}`));
-                stream.on('close', (code) => finish(code && code !== 0 ? `Command exited with status ${code}.` : 'Command completed.', code ?? null));
+                stream.on('close', (code) => {
+                    const output = Buffer.concat(chunks).toString('utf8');
+                    const routerError = /(?:^|[\r\n])\s*(?:bad (?:command|parameter)|syntax error|expected |failure:|no such item|not enough permissions)/i.test(output);
+                    const message = code && code !== 0 ? `Command exited with status ${code}.`
+                        : routerError ? 'Router reported an error. See the output above.'
+                        : !output.trim() ? 'Router returned no output. A filtered print may have no matching entries.'
+                        : 'Router command finished. Review the output above.';
+                    finish(message, code ?? null);
+                });
                 stream.end();
             });
         });

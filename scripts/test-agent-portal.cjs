@@ -114,6 +114,39 @@ async function main(mode) {
     const state = (await request('/api/agent/state', alice.token)).data;
     assert.equal(state.sales.length, 1);
     assert.equal(state.amountDue, 5);
+    const dayStart = Math.floor(voucher.createdAt / 86400000) * 86400000;
+    const reportChange = { kind: 'finance', action: 'delete', from: dayStart, to: dayStart + 86400000, requestId: crypto.randomUUID() };
+    assert.equal((await request('/api/admin/report-history', alice.token, reportChange)).status, 403);
+    assert.equal((await request('/api/admin/report-history', owner.token, { ...reportChange, from: 'bad' })).status, 400);
+    assert.equal((await request('/api/towns/second/admin/report-history', owner.token, reportChange)).data.affected, 0);
+    assert.equal((await request('/api/admin/report-history', owner.token, reportChange)).data.affected, 1);
+    assert.equal((await request('/api/admin/towns/overview', owner.token)).data.towns[0].revenue, 0);
+    const hidden = (await request('/api/agent/state', alice.token)).data;
+    assert.equal(hidden.amountDue, 5);
+    assert.equal(hidden.users[0].id, voucher.id);
+    assert.ok(hidden.sales[0].reportDeletedAt);
+    assert.equal((await request('/api/admin/report-history', owner.token, reportChange)).data.affected, 1);
+    assert.equal((await request('/api/admin/report-history', owner.token, { ...reportChange, action: 'restore' })).status, 409);
+    assert.equal((await request('/api/admin/report-history', owner.token, { ...reportChange, action: 'restore', requestId: crypto.randomUUID() })).data.affected, 1);
+    assert.equal((await request('/api/admin/towns/overview', owner.token)).data.towns[0].revenue, 5);
+    const usageData = JSON.parse(fs.readFileSync(env.DATA_FILE));
+    usageData.dataUsage.days = [{ date: new Date(dayStart).toISOString().slice(0, 10), bytes: 2048 }];
+    fs.writeFileSync(env.DATA_FILE, JSON.stringify(usageData));
+    const usageChange = { ...reportChange, kind: 'usage', requestId: crypto.randomUUID() };
+    assert.equal((await request('/api/admin/report-history', owner.token, { ...usageChange, from: dayStart + 1 })).status, 400);
+    assert.equal((await request('/api/admin/report-history', owner.token, usageChange)).data.affected, 1);
+    let recorded = JSON.parse(fs.readFileSync(env.DATA_FILE));
+    assert.equal(recorded.dataUsage.days[0].reportDeletedBytes, 2048);
+    assert.equal(recorded.vouchers[0].dataLimit, voucher.dataLimit);
+    recorded.dataUsage.days[0].bytes += 512; // newly reported usage after clearing
+    fs.writeFileSync(env.DATA_FILE, JSON.stringify(recorded));
+    await request('/api/admin/report-history', owner.token, usageChange); // lost-response retry must not clear new usage
+    recorded = JSON.parse(fs.readFileSync(env.DATA_FILE));
+    assert.equal(recorded.dataUsage.days[0].bytes - recorded.dataUsage.days[0].reportDeletedBytes, 512);
+    assert.equal((await request('/api/admin/report-history', owner.token, { ...usageChange, action: 'restore', requestId: crypto.randomUUID() })).data.affected, 1);
+    recorded = JSON.parse(fs.readFileSync(env.DATA_FILE));
+    assert.equal(recorded.dataUsage.days[0].reportDeletedBytes, 0);
+    assert.ok(recorded.reportActions.every((item) => item.managerId === owner.id));
     assert.equal((await request('/api/agent/state', bob.token)).data.sales.length, 0);
     assert.equal((await request('/api/towns/second/agent/state', alice.token)).data.amountDue, 0);
     assert.equal((await request('/api/agent/vouchers', alice.token, { ...payload, phone: 'bad' })).status, 400);
@@ -176,6 +209,7 @@ async function main(mode) {
     const persisted = (await request('/api/agent/state', resumed.token)).data;
     assert.equal(persisted.amountDue, 3);
     assert.equal(persisted.payments.length, 1);
+    assert.ok(JSON.parse(fs.readFileSync(env.DATA_FILE)).reportActions.length >= 4);
     const secondPersisted = (await request('/api/towns/second/agent/state', resumed.token)).data;
     assert.equal(secondPersisted.creditBalance, 2.5);
     assert.equal(secondPersisted.totalReceived, 7.5);

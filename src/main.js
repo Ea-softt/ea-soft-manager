@@ -62,6 +62,10 @@ let agentRequestId = null;
 let agentResult = null;
 let staffMessage = '';
 let staffTab = 'register';
+let backupBusy = false;
+let backupPreview = null;
+let backupMessage = '';
+const reportRequests = new Map();
 let loginMode = 'login';
 let recoveryEmail = '';
 let authGeneration = 0;
@@ -93,6 +97,7 @@ let bulkDeleting = false;
 let terminalDraft = '';
 let terminalOutput = '';
 let terminalBusy = false;
+let terminalLastCommand = '';
 const selectedVoucherIds = new Set();
 
 function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } })); }
@@ -103,6 +108,7 @@ function signOut() {
   terminalDraft = '';
   terminalOutput = '';
   terminalBusy = false;
+  terminalLastCommand = '';
   authenticated = false;
   towns = [];
   sharedVoucherMode = false;
@@ -119,6 +125,9 @@ function signOut() {
   accountEmail = '';
   accountRole = 'manager';
   staffTab = 'register';
+  backupPreview = null;
+  backupMessage = '';
+  reportRequests.clear();
   staffRecords = [];
   agentLedger = { sales: [], payments: [], amountDue: 0 };
   agentResult = null;
@@ -238,7 +247,7 @@ async function apiRequest(pathname, options = {}) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
   }
-  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment)$/;
+  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment|report-history)$/;
   if (townRoutes.test(pathname)) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
@@ -377,7 +386,7 @@ function render() {
   for (const id of selectedVoucherIds) { if (!state.users.some((user) => user.id === id)) selectedVoucherIds.delete(id); }
   refreshStatus();
   const activeUsers = state.users.filter((user) => user.status === 'active').length;
-  const revenue = financeAvailable ? state.sales.reduce((total, user) => total + Number(user.amount || 0), 0) : null;
+  const revenue = financeAvailable ? state.sales.filter((sale) => !sale.reportDeletedAt).reduce((total, user) => total + Number(user.amount || 0), 0) : null;
   const expiring = state.users.filter((user) => user.status === 'active' && user.expiresAt != null && user.expiresAt - Date.now() < 86400000).length;
 
   document.querySelector('#app').innerHTML = `
@@ -393,12 +402,13 @@ function render() {
           ${navItem('consumption', 'Database', 'Data consumption')}
           ${navItem('terminal', 'Terminal', 'Terminal')}
           ${navItem('settings', 'Settings', 'Settings')}
+          ${navItem('backup', 'Download', 'Backup & restore')}
         </nav>
         <div class="sidebar-foot"><span class="status-dot"></span> ${sharedVoucherMode ? 'Vouchers valid in all towns' : 'Admin workspace'}</div>
       </aside>
       <main class="main-content">
         <header class="topbar"><label class="town-picker">Town<select id="town-select" ${pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan ? 'disabled' : ''}><option value="all" ${selectedTown === 'all' ? 'selected' : ''}>All towns</option>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' || activeView === 'backup' ? renderView({ activeUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
@@ -406,11 +416,13 @@ function render() {
   bindEvents();
   bindTownSettings();
   bindAgentManagement();
+  bindReportHistory();
+  bindBackup();
 }
 
 function agentSalesTable(sales, showAgent = false) {
   const vouchers = new Map(state.users.map((voucher) => [voucher.id, voucher]));
-  return `<div class="table-wrap"><table><thead><tr>${showAgent ? '<th>Agent</th>' : ''}<th>Created</th><th>${showAgent ? 'Voucher' : 'Username / Password'}</th><th>Plan</th><th>Customer number</th><th>Amount</th></tr></thead><tbody>${sales.map((sale) => `<tr>${showAgent ? `<td>${escapeText(sale.agentName || sale.agentId)}</td>` : ''}<td>${escapeText(formatDate(sale.createdAt))}</td><td>${escapeText(sale.username || sale.voucherId)}${showAgent ? '' : `<br><small>Password: ${escapeText(vouchers.get(sale.voucherId || sale.id)?.password ?? 'Unavailable (voucher deleted)')}</small>`}</td><td>${escapeText(sale.planName || getPlan(sale.planId)?.name || sale.planId)}</td><td>${escapeText(sale.phone || '')}</td><td>${money(sale.amount)}</td></tr>`).join('') || `<tr><td colspan="${showAgent ? 6 : 5}">No agent vouchers yet.</td></tr>`}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr>${showAgent ? '<th>Agent</th>' : ''}<th>Created</th><th>${showAgent ? 'Voucher' : 'Username / Password'}</th><th>Plan</th><th>Customer number</th><th>Amount</th>${showAgent ? '<th>Actions</th>' : ''}</tr></thead><tbody>${sales.map((sale) => `<tr>${showAgent ? `<td>${escapeText(sale.agentName || sale.agentId)}</td>` : ''}<td>${escapeText(formatDate(sale.createdAt))}</td><td>${escapeText(sale.username || sale.voucherId)}${showAgent ? '' : `<br><small>Password: ${escapeText(vouchers.get(sale.voucherId || sale.id)?.password ?? 'Unavailable (voucher deleted)')}</small>`}</td><td>${escapeText(sale.planName || getPlan(sale.planId)?.name || sale.planId)}</td><td>${escapeText(sale.phone || '')}</td><td>${money(sale.amount)}</td>${showAgent ? `<td>${vouchers.has(sale.voucherId || sale.id) ? `<button class="secondary-button" data-action="delete-user" data-id="${escapeText(sale.voucherId || sale.id)}" ${bulkDeleting ? 'disabled' : ''}>Delete voucher</button>` : '<small>Voucher deleted; sale retained</small>'}</td>` : ''}</tr>`).join('') || `<tr><td colspan="${showAgent ? 7 : 5}">No agent vouchers yet.</td></tr>`}</tbody></table></div>`;
 }
 function agentBalance(sales, payments) {
   const salesCents = sales.reduce((sum, sale) => sum + Math.round(Number(sale.amount) * 100), 0);
@@ -423,7 +435,7 @@ function agentBalanceSummary(sales, payments) {
   return `<p>${sales.length} vouchers</p><p>Total sales payable to manager: <strong>${money(balance.totalSales)}</strong></p><p>Already received by manager: <strong>${money(balance.totalReceived)}</strong></p><p>Remaining balance to pay: <strong>${money(balance.amountDue)}</strong></p>${balance.creditBalance ? `<p>Agent credit (received above current sales): <strong>${money(balance.creditBalance)}</strong></p>` : ''}<p>The full sales amount belongs to the manager. Only payments recorded as received reduce the remaining balance.</p>`;
 }
 function agentPaymentHistory(payments, canCorrect = false) {
-  return payments.map((payment) => `<article><p>${payment.voidedAt ? 'Reversed payment' : 'Received by manager'}: ${money(payment.amount)} on ${escapeText(formatDate(payment.createdAt))}</p>${payment.voidedAt ? `<p>Reversed on ${escapeText(formatDate(payment.voidedAt))}: ${escapeText(payment.voidReason || '')}. Excluded from received total.</p>` : canCorrect ? `<details><summary>Correct a payment entered by mistake</summary><form class="agent-payment-void-form" data-payment="${escapeText(payment.id)}"><fieldset><label>Reason<input name="reason" required maxlength="300" placeholder="Why was this payment entered incorrectly?" /></label><button class="secondary-button">Reverse this payment record</button></fieldset><p class="staff-error" role="alert"></p></form></details>` : ''}</article>`).join('') || '<p>No payments recorded.</p>';
+  return payments.map((payment) => `<article><p>${payment.voidedAt ? 'Reversed payment' : 'Received by manager'}: ${money(payment.amount)} on ${escapeText(formatDate(payment.createdAt))}</p>${payment.voidedAt ? `<p>Reversed on ${escapeText(formatDate(payment.voidedAt))}: ${escapeText(payment.voidReason || '')}. Excluded from received total.</p>` : canCorrect ? `<details><summary>Correct a payment entered by mistake</summary><form class="agent-payment-void-form" data-payment="${escapeText(payment.id)}"><fieldset><label>Reason<input name="reason" required maxlength="300" placeholder="Why was this payment entered incorrectly?" /></label><button class="secondary-button">Delete payment record (reverse)</button></fieldset><p class="staff-error" role="alert"></p></form></details>` : ''}</article>`).join('') || '<p>No payments recorded.</p>';
 }
 function renderAgentPortal() {
   document.querySelector('#app').innerHTML = `<main class="main-content"><header class="topbar"><strong>EA-Soft Agent</strong><button class="secondary-button" id="agent-signout" ${agentBusy ? 'disabled' : ''}>Sign out</button></header><section class="page-wrap"><h1>Create customer voucher</h1><p>${escapeText(accountEmail)}</p><label>Town<select id="agent-town" ${agentBusy ? 'disabled' : ''}>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label>${syncError ? `<p role="alert">${escapeText(syncError)}</p>` : ''}<section class="panel"><h2>Payments to manager</h2><p>For the selected town.</p>${hasLoadedState ? agentBalanceSummary(agentLedger.sales, agentLedger.payments) : '<p>Loading...</p>'}<form id="agent-voucher-form" class="settings-panel"><fieldset ${agentBusy || !hasLoadedState ? 'disabled' : ''}><label>Customer plan<select name="planId" required>${state.plans.map((plan) => `<option value="${escapeText(plan.id)}">${escapeText(plan.name)} — ${money(plan.price)}</option>`).join('')}</select></label><label>Customer phone number<input name="phone" type="tel" required maxlength="16" placeholder="0241234567" autocomplete="tel" /></label><p>The voucher code and password are generated automatically. The selected plan sets the price.</p><button class="primary-button" type="submit">${agentBusy ? 'Creating voucher…' : 'Create voucher & send SMS'}</button></fieldset><p id="agent-error" role="alert"></p></form></section>${agentResult ? `<section class="panel" role="status"><h2>Voucher created — ${money(agentResult.amount)}</h2><p>Username: <strong>${escapeText(agentResult.username)}</strong> · Password: <strong>${escapeText(agentResult.password)}</strong></p><p>${agentResult.smsStatus === 'submitted' ? 'SMS submitted to the provider.' : 'SMS was not confirmed. Give these voucher details to the customer.'}</p></section>` : ''}<section class="panel"><h2>Your vouchers</h2>${agentSalesTable(agentLedger.sales)}</section><section class="panel"><h2>Payments received by manager</h2>${agentPaymentHistory(agentLedger.payments)}</section></section></main>`;
@@ -498,7 +510,7 @@ function renderAgentManagement() {
         <label>Email<input name="email" type="email" required maxlength="254" autocomplete="off" placeholder="name@example.com" /></label>
         <label>Initial password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" placeholder="At least 12 characters" /></label>
         <label>Role<select name="role"><option value="agent">Agent - create vouchers only</option><option value="manager">Manager - full management access</option></select></label>
-        <button class="primary-button">${icon('Plus', 16)} Register account</button></fieldset><p class="staff-error" role="alert"></p></form>
+        <button class="primary-button">${icon('Plus', 16)} Register account</button><button type="reset" class="secondary-button">Clear form</button></fieldset><p class="staff-error" role="alert"></p></form>
         <aside class="staff-access-note"><h3>Choose the right access</h3><p><strong>Agent</strong><br>Create customer vouchers and view their own sales and payments.</p><p><strong>Manager</strong><br>Manage staff, plans, vouchers, and payments.</p><p>Everyone uses the same sign-in page with their own email and password.</p></aside></div>
     </section>
     <section class="panel staff-tab-panel" ${panel('staff')}><div class="staff-panel-heading"><p class="eyebrow">YOUR TEAM</p><h2>Registered staff</h2><p>Update roles or remove access to a staff account.</p></div><div class="staff-account-list">${renderStaffAccounts()}</div></section>
@@ -603,11 +615,88 @@ function bindAgentManagement() {
   }));
 }
 
+function renderBackup() {
+  return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE RECOVERY</p><h1>Backup & restore</h1><p class="subhead">Protect your manager records across every town.</p></div></div>
+    <section class="panel backup-scope"><h2>One backup for all your records</h2><p>Includes manager and agent accounts, plans, voucher credentials, sales, payments, usage history, and report corrections for every configured town.</p><p>Server keys and MikroTik configuration stay unchanged. Restore requires the same town IDs and replaces all current records, including account passwords and balances. Router-only changes are not restored.</p></section>
+    ${backupMessage ? `<p class="staff-notice" role="status">${escapeText(backupMessage)}</p>` : ''}
+    <div class="backup-grid"><section class="panel settings-panel"><div><p class="eyebrow">SAVE A COPY</p><h2>Create backup</h2><p>The downloaded file is encrypted. Keep its password somewhere safe; it is required to restore.</p></div><form id="backup-export-form"><fieldset ${backupBusy ? 'disabled' : ''}><label>Backup password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm backup password<input name="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><button class="primary-button">${icon('Download', 16)} Download full backup</button></fieldset><p class="backup-error" role="alert"></p></form></section>
+    <section class="panel settings-panel"><div><p class="eyebrow">RECOVER YOUR WORKSPACE</p><h2>Restore backup</h2><p>Choose an encrypted EA-Soft backup to check its contents before restoring. Older screen-only exports cannot restore the server.</p></div><form id="backup-preview-form"><fieldset ${backupBusy ? 'disabled' : ''}><label>Backup file<input id="restore-backup-file" name="file" type="file" accept="application/json,.json" required /></label><label>Backup password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="off" /></label><button class="secondary-button">${icon('Upload', 16)} Preview backup</button></fieldset><p class="backup-error" role="alert"></p></form></section></div>
+    <section class="panel backup-preview"><h2>Safety backups</h2><p>Copies saved automatically before each restore. Each uses the password entered for that restore.</p><button id="load-safety-backups" class="secondary-button">Show safety backups</button><div id="safety-backup-list" role="status"></div></section>
+    ${backupPreview ? `<section class="panel backup-preview"><h2>Review before restoring</h2><p>Created ${escapeText(formatDate(backupPreview.createdAt))}. Owner: ${escapeText(backupPreview.ownerEmail)}. ${backupPreview.staff} registered staff accounts.</p><div class="table-scroll"><table><thead><tr><th>Town</th><th>Plans</th><th>Vouchers</th><th>Sales</th><th>Payments</th><th>Usage days</th></tr></thead><tbody>${backupPreview.towns.map((town) => `<tr><td>${escapeText(town.name)}</td><td>${town.plans}</td><td>${town.vouchers}</td><td>${town.sales}</td><td>${town.payments}</td><td>${town.usageDays}</td></tr>`).join('')}</tbody></table></div><p>Your current records will be replaced. A safety backup is saved on the server using the backup password you entered. The server restarts to finish restoring, and everyone must sign in again using credentials from the backup.</p><form id="backup-restore-form" class="settings-panel"><fieldset ${backupBusy ? 'disabled' : ''}><label>Your current manager password<input name="currentPassword" type="password" required maxlength="256" autocomplete="current-password" /></label><label>Type RESTORE to confirm<input name="confirmation" required pattern="RESTORE" autocomplete="off" /></label><button class="primary-button">Restore all manager records</button></fieldset><p class="backup-error" role="alert"></p></form></section>` : ''}`;
+}
+function bindBackup() {
+  document.querySelector('#load-safety-backups')?.addEventListener('click', async () => {
+    const list = document.querySelector('#safety-backup-list');
+    try {
+      const result = await apiRequest('/api/admin/backup/safety');
+      list.innerHTML = result.backups.map((item) => `<p>${escapeText(formatDate(item.createdAt))} <button class="secondary-button" data-safety-backup="${escapeText(item.name)}">Download safety backup</button></p>`).join('') || '<p>No safety backups yet.</p>';
+      list.querySelectorAll('[data-safety-backup]').forEach((button) => button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const result = await apiRequest(`/api/admin/backup/safety/${encodeURIComponent(button.dataset.safetyBackup)}`);
+          await saveExportFile(button.dataset.safetyBackup, JSON.stringify(result.backup), 'application/json');
+        } catch (error) { alert(error.message); }
+        finally { button.disabled = false; }
+      }));
+    } catch (error) { list.textContent = error.message; }
+  });
+  async function run(form, operation) {
+    if (backupBusy) return;
+    backupBusy = true;
+    document.querySelectorAll('#backup-export-form fieldset, #backup-preview-form fieldset, #backup-restore-form fieldset').forEach((item) => { item.disabled = true; });
+    form.querySelector('.backup-error').textContent = '';
+    try { await operation(); }
+    catch (error) { form.querySelector('.backup-error').textContent = error.message; }
+    finally {
+      backupBusy = false;
+      document.querySelectorAll('#backup-export-form fieldset, #backup-preview-form fieldset, #backup-restore-form fieldset').forEach((item) => { item.disabled = false; });
+    }
+  }
+  document.querySelector('#backup-export-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.target;
+    return run(form, async () => {
+      if (form.elements.password.value !== form.elements.confirmPassword.value) throw new Error('Backup passwords do not match.');
+      const result = await apiRequest('/api/admin/backup/export', { method: 'POST', body: JSON.stringify({ password: form.elements.password.value }) });
+      await saveExportFile(`ea-soft-full-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, JSON.stringify(result.backup), 'application/json');
+      form.reset();
+      backupMessage = 'Backup prepared for download. Keep the file and its password safe.';
+      if (authenticated && activeView === 'backup') render();
+    });
+  });
+  document.querySelector('#backup-preview-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.target;
+    return run(form, async () => {
+      backupPreview = null;
+      const file = form.elements.file.files[0];
+      if (!file || file.size > 29 * 1024 * 1024) throw new Error('Choose a backup file smaller than 29 MB.');
+      let backup;
+      try { backup = JSON.parse(await file.text()); } catch { throw new Error('This is not a valid JSON backup file.'); }
+      const result = await apiRequest('/api/admin/backup/preview', { method: 'POST', body: JSON.stringify({ backup, password: form.elements.password.value }) });
+      backupPreview = result;
+      backupMessage = 'Backup checked. Review the contents below. Nothing has been restored yet.';
+      if (authenticated && activeView === 'backup') render();
+    });
+  });
+  document.querySelector('#backup-restore-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.target;
+    return run(form, async () => {
+      if (!backupPreview) throw new Error('Preview your backup again before restoring.');
+      const result = await apiRequest('/api/admin/backup/restore', { method: 'POST', body: JSON.stringify({ previewId: backupPreview.previewId,
+        currentPassword: form.elements.currentPassword.value, confirmation: form.elements.confirmation.value }) });
+      signOut();
+      document.querySelector('#login-error').textContent = `${result.message} Safety copy: ${result.safetyBackup}.${result.restarting ? '' : ' On the server, run: pm2 restart ea-soft-api --update-env'}`;
+    });
+  });
+}
+
 function renderTerminal() {
   return `<div class="heading-row"><div><p class="eyebrow">ROUTER MANAGEMENT</p><h1>MikroTik Terminal</h1></div></div>
-    <section class="panel terminal-panel"><p>Run a complete RouterOS command. Each command starts at the root menu in a new SSH connection. Interactive prompts and continuous commands are not supported; use a count or duration.</p>
+    <section class="panel terminal-panel"><p>Run one complete RouterOS command at a time. Paste commands separately; do not join them with spaces or commas. Each run starts at the root menu. Interactive prompts are not supported; use a count or duration for continuous commands.</p>
     <pre id="terminal-output" class="terminal-output" tabindex="0" aria-label="Terminal output">${escapeText(terminalOutput || 'Ready. Try /system resource print')}</pre>
-    <form id="terminal-form"><label for="terminal-command">RouterOS command</label><input id="terminal-command" name="command" required maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="/system resource print" value="${escapeText(terminalDraft)}" ${terminalBusy ? 'disabled' : ''} /><div class="terminal-actions"><button type="submit" class="primary-button" ${terminalBusy ? 'disabled' : ''}>${terminalBusy ? 'Running…' : 'Run command'}</button><button id="terminal-clear" class="secondary-button" type="button" ${terminalBusy ? 'disabled' : ''}>Clear output</button></div></form>
+    <form id="terminal-form"><label for="terminal-command">RouterOS command</label><textarea id="terminal-command" name="command" rows="3" required maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="/system resource print" ${terminalBusy ? 'disabled' : ''}>${escapeText(terminalDraft)}</textarea><p>Enter to run · Shift+Enter for a new line. Only one line can be submitted.</p><div class="terminal-actions"><button type="submit" class="primary-button" ${terminalBusy ? 'disabled' : ''}>${terminalBusy ? 'Running…' : 'Run command'}</button><button id="terminal-recall" class="secondary-button" type="button" ${terminalBusy || !terminalLastCommand ? 'disabled' : ''}>Edit last command</button><button id="terminal-copy" class="secondary-button" type="button" ${!terminalOutput ? 'disabled' : ''}>Copy output</button><button id="terminal-clear" class="secondary-button" type="button" ${terminalBusy ? 'disabled' : ''}>Clear output</button></div></form>
     <p id="terminal-status" role="status">${terminalBusy ? 'Waiting for router output…' : 'Commands run with the configured router account permissions. Changes take effect immediately.'}</p></section>`;
 }
 function bindTerminal() {
@@ -615,6 +704,27 @@ function bindTerminal() {
   if (!form) return;
   const input = document.querySelector('#terminal-command');
   input.addEventListener('input', () => { terminalDraft = input.value; });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) runTerminalCommand(event);
+  });
+  document.querySelector('#terminal-recall').onclick = () => {
+    terminalDraft = terminalLastCommand;
+    input.value = terminalDraft;
+    input.focus();
+  };
+  document.querySelector('#terminal-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(terminalOutput);
+      document.querySelector('#terminal-status').textContent = 'Output copied.';
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(output);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.querySelector('#terminal-status').textContent = 'Output selected. Use your device’s Copy command.';
+    }
+  };
   document.querySelector('#terminal-clear').onclick = () => { terminalOutput = ''; render(); };
   form.addEventListener('submit', runTerminalCommand);
   const output = document.querySelector('#terminal-output');
@@ -625,6 +735,12 @@ async function runTerminalCommand(event) {
   if (!authenticated || terminalBusy || !terminalDraft.trim()) return;
   const generation = authGeneration;
   const command = terminalDraft.trim();
+  if (/[\r\n]/.test(command)) {
+    terminalOutput = `${terminalOutput}\nNot sent: paste and run one command at a time. Multiple lines were kept in the editor.\n`.slice(-300000);
+    render();
+    return;
+  }
+  terminalLastCommand = command;
   terminalBusy = true;
   terminalOutput = `${terminalOutput}\n> ${command}\n`.slice(-300000);
   terminalDraft = '';
@@ -632,7 +748,7 @@ async function runTerminalCommand(event) {
   try {
     const result = await apiRequest('/api/admin/terminal', { method: 'POST', body: JSON.stringify({ command }) });
     if (generation !== authGeneration) return;
-    terminalOutput = `${terminalOutput}${result.output || ''}\n${result.message || 'Command completed.'}\n`.slice(-300000);
+    terminalOutput = `${terminalOutput}${result.output || '[No output returned by router]'}\n${result.message || 'Router command finished. Review the output above.'}\n`.slice(-300000);
   } catch (error) {
     if (generation !== authGeneration) return;
     terminalOutput += `Error: ${error.message}\n`;
@@ -645,6 +761,7 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (activeView === 'backup') return renderBackup();
   if (activeView === 'agents') return renderAgentManagement();
   if (activeView === 'consumption') return renderDataConsumption();
   if (selectedTown === 'all') {
@@ -663,7 +780,7 @@ function startOfDay(date = new Date()) { const d = new Date(date); d.setHours(0,
 function startOfWeek(date = new Date()) { const d = new Date(date); const offset = (d.getDay() + 6) % 7; d.setDate(d.getDate() - offset); d.setHours(0, 0, 0, 0); return d.getTime(); }
 function startOfMonth(date = new Date()) { return new Date(date.getFullYear(), date.getMonth(), 1).getTime(); }
 function startOfYear(date = new Date()) { return new Date(date.getFullYear(), 0, 1).getTime(); }
-function usersInRange(from, to) { return state.sales.filter((user) => user.createdAt >= from && user.createdAt < to); }
+function usersInRange(from, to) { return state.sales.filter((user) => !user.reportDeletedAt && user.createdAt >= from && user.createdAt < to); }
 function rangeStats(from, to) { const users = usersInRange(from, to); return { revenue: users.reduce((total, user) => total + Number(user.amount || 0), 0), count: users.length }; }
 function financeBuckets(range) {
   const now = new Date();
@@ -699,8 +816,45 @@ function moveUsagePeriod(date, range, offset) {
 function usageTotal(from, to) {
   return dataUsage.days.reduce((total, day) => {
     const timestamp = Date.parse(`${day.date}T00:00:00Z`);
-    return total + (timestamp >= from && timestamp < to ? day.bytes : 0);
+    return total + (timestamp >= from && timestamp < to ? Math.max(0, day.bytes - (day.reportDeletedBytes || 0)) : 0);
   }, 0);
+}
+function reportHistoryControls(kind, from, to) {
+  if (selectedTown === 'all') return '<small>Select a town to manage history</small>';
+  let visible, deleted;
+  if (kind === 'finance') {
+    const sales = state.sales.filter((sale) => sale.createdAt >= from && sale.createdAt < to);
+    visible = sales.some((sale) => !sale.reportDeletedAt);
+    deleted = sales.some((sale) => sale.reportDeletedAt);
+  } else {
+    const days = dataUsage.days.filter((day) => { const date = Date.parse(`${day.date}T00:00:00Z`); return date >= from && date < to; });
+    visible = days.some((day) => day.bytes > (day.reportDeletedBytes || 0));
+    deleted = days.some((day) => day.reportDeletedBytes > 0);
+  }
+  const button = (action, label) => `<button class="secondary-button" data-report-action="${action}" data-report-kind="${kind}" data-from="${from}" data-to="${to}">${label}</button>`;
+  return `<div class="report-actions">${visible ? button('delete', 'Delete from report') : ''}${deleted ? button('restore', 'Restore') : ''}${!visible && !deleted ? '<small>No records</small>' : ''}</div>`;
+}
+function bindReportHistory() {
+  document.querySelectorAll('[data-report-action]').forEach((button) => button.addEventListener('click', async () => {
+    if (pendingRequests || accountRole !== 'manager') return;
+    const { reportAction: action, reportKind: kind } = button.dataset;
+    const from = Number(button.dataset.from), to = Number(button.dataset.to);
+    const zone = kind === 'usage' ? { timeZone: 'UTC' } : {};
+    const range = `${new Date(from).toLocaleDateString(undefined, zone)} – ${new Date(to - 1).toLocaleDateString(undefined, zone)}`;
+    const scope = towns.find((town) => town.id === selectedTown)?.name || selectedTown;
+    const explanation = kind === 'finance' ? 'Voucher access, agent balances and payment history stay unchanged.' : 'Customer data allowances stay unchanged. New usage continues to be recorded.';
+    if (!confirm(`${action === 'delete' ? 'Delete from' : 'Restore to'} the ${kind === 'finance' ? 'finance' : 'data consumption'} report for ${scope}, ${range}? ${explanation} Deleted report entries can be restored.`)) return;
+    const key = JSON.stringify([selectedTown, kind, action, from, to]);
+    if (!reportRequests.has(key)) reportRequests.set(key, crypto.randomUUID());
+    button.disabled = true;
+    try {
+      await apiRequest('/api/admin/report-history', { method: 'POST', body: JSON.stringify({ kind, action, from, to, requestId: reportRequests.get(key) }) });
+      await syncRemoteState();
+      reportRequests.delete(key);
+      render();
+    } catch (error) { alert(error.message); }
+    finally { button.disabled = false; }
+  }));
 }
 function renderDataConsumption() {
   if (!dataUsage || !Array.isArray(dataUsage.days)) return '<section class="panel"><h1>Data consumption unavailable</h1><p>Update the backend and refresh to load usage history. All town records must be available for combined totals.</p><button class="secondary-button" data-action="sync">Refresh</button></section>';
@@ -722,8 +876,8 @@ function renderDataConsumption() {
       const from = usagePeriodStart(range); const to = moveUsagePeriod(from, range, 1);
       return `<div class="stat-card ${colors[index]}"><span class="stat-icon">${icon('Database')}</span><p>${label}</p><strong>${formatDataUsage(usageTotal(from, to))}</strong><small>${from < coverageStart ? 'Partial tracking period' : 'Recorded consumption'}</small></div>`;
     }).join('')}</div>
-    <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Consumption by period</h2></div><div class="toolbar">${periods.map(([range, label]) => `<button class="${usageRange === range ? 'primary-button' : 'secondary-button'}" data-action="usage-range" data-id="${range}" aria-pressed="${usageRange === range}">${label}</button>`).join('')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Data consumed</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${display(bucket.from, bucket.to, bucket.bytes)}</td></tr>`).join('')}</tbody></table></div></section>
-    <p class="subhead">Tracking since ${escapeText(new Date(dataUsage.startedAt).toISOString().slice(0, 10))}. Earlier usage cannot be reconstructed. Usage is assigned to the day it is reported; gaps in router reporting can shift totals. Recorded totals survive voucher deletion. ${sharedVoucherMode ? 'Town totals follow the town where the voucher was issued.' : 'The first router reading establishes a baseline.'} Units use 1024 bytes per KB.</p>`;
+    <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Consumption by period</h2></div><div class="toolbar">${periods.map(([range, label]) => `<button class="${usageRange === range ? 'primary-button' : 'secondary-button'}" data-action="usage-range" data-id="${range}" aria-pressed="${usageRange === range}">${label}</button>`).join('')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Data consumed</th><th>Report actions</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${display(bucket.from, bucket.to, bucket.bytes)}</td><td>${reportHistoryControls('usage', bucket.from.getTime(), bucket.to.getTime())}</td></tr>`).join('')}</tbody></table></div></section>
+    <p class="subhead">Tracking since ${escapeText(new Date(dataUsage.startedAt).toISOString().slice(0, 10))}. Earlier usage cannot be reconstructed. Usage is assigned to the day it is reported; gaps in router reporting can shift totals. Deleted report usage is excluded from totals and can be restored. New usage continues to accumulate; customer quotas are unchanged. ${sharedVoucherMode ? 'Town totals follow the town where the voucher was issued.' : 'The first router reading establishes a baseline.'} Units use 1024 bytes per KB.</p>`;
 }
 function renderFinances() {
   if (!financeAvailable) return '<section class="panel"><h1>Finance history unavailable</h1><p>Install the finance update on the backend to load permanent sales records. No zero balances are being reported.</p></section>';
@@ -735,14 +889,14 @@ function renderFinances() {
     { label: 'This year', ...rangeStats(startOfYear(now), new Date(now.getFullYear() + 1, 0, 1).getTime()), color: 'coral' }
   ];
   const buckets = financeBuckets(financeRange);
-  return `<div class="heading-row"><div><p class="eyebrow">FINANCES</p><h1>Revenue statistics</h1><p class="subhead">Recorded sales remain in your finances after vouchers are activated, expire, or are deleted.</p></div></div>
+  return `<div class="heading-row"><div><p class="eyebrow">FINANCES</p><h1>Revenue statistics</h1><p class="subhead">Sales remain after voucher deletion. Delete from report hides a period from these totals; Restore brings it back. Agent balances and payment records are kept.</p></div></div>
     <div class="stat-grid">${summary.map((item) => `<div class="stat-card ${item.color}"><span class="stat-icon">${icon('Database')}</span><p>${item.label}</p><strong>${money(item.revenue)}</strong><small>${item.count} voucher${item.count === 1 ? '' : 's'}</small></div>`).join('')}</div>
-    <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Revenue by period</h2></div><div class="toolbar">${financeRangeTab('daily', 'Daily')}${financeRangeTab('weekly', 'Weekly')}${financeRangeTab('monthly', 'Monthly')}${financeRangeTab('yearly', 'Yearly')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Vouchers</th><th>Revenue</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${bucket.count}</td><td>${money(bucket.revenue)}</td></tr>`).join('')}</tbody></table></div></section>`;
+    <section class="panel table-panel"><div class="panel-head"><div><p class="eyebrow">BREAKDOWN</p><h2>Revenue by period</h2></div><div class="toolbar">${financeRangeTab('daily', 'Daily')}${financeRangeTab('weekly', 'Weekly')}${financeRangeTab('monthly', 'Monthly')}${financeRangeTab('yearly', 'Yearly')}</div></div><div class="table-scroll"><table><thead><tr><th>Period</th><th>Vouchers</th><th>Revenue</th><th>Report actions</th></tr></thead><tbody>${buckets.map((bucket) => `<tr><td>${bucket.label}</td><td>${bucket.count}</td><td>${money(bucket.revenue)}</td><td>${reportHistoryControls('finance', bucket.from, bucket.to)}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 function renderOverview({ activeUsers, revenue, expiring }) {
   const recent = [...state.users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
   return `<div class="heading-row"><div><p class="eyebrow">CONTROL ROOM</p><h1>Good morning, EA-Soft.</h1><p class="subhead">A clear view of your hotspot business, vouchers, and plan performance.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div>
-    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers}</strong><small>Currently valid</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small>All recorded sales</small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
+    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers}</strong><small>Currently valid</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small>Reported sales; cleared entries excluded</small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
     <div class="content-grid"><section class="panel wide-panel"><div class="panel-head"><div><p class="eyebrow">LATEST ACTIVITY</p><h2>Recent vouchers</h2></div><button class="text-button" data-view="users">View all ${icon('ChevronDown')}</button></div>${userTable(recent)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR CATALOG</p><h2>Plans</h2></div><button class="icon-button small" data-action="new-plan">${icon('Plus')}</button></div><div class="mini-plans">${state.plans.slice(0, 5).map(planMini).join('')}</div></section></div>`;
 }
 function voucherDisplayStatus(user) {
@@ -877,7 +1031,7 @@ function renderModal() {
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
 function bindEvents() { document.querySelector('#town-select')?.addEventListener('change', (event) => { const id = event.target.value; event.target.value = selectedTown; switchTown(id); }); document.querySelectorAll('[data-town]').forEach((el) => el.onclick = () => switchTown(el.dataset.town)); bindTerminal(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
-async function handleAction(action, id) { if (!authenticated) return; if (selectedTown === 'all' && !['sign-out', 'sync', 'finance-range', 'usage-range', 'save-settings', 'disable-fingerprint'].includes(action)) { alert('Select a town first.'); return; } if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'usage-range') usageRange = id; if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
+async function handleAction(action, id) { if (!authenticated) return; if (selectedTown === 'all' && !['sign-out', 'sync', 'finance-range', 'usage-range', 'save-settings', 'disable-fingerprint', 'export', 'import'].includes(action)) { alert('Select a town first.'); return; } if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'usage-range') usageRange = id; if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
 async function saveSettings() { state.settings.currency = document.querySelector('#currency-input')?.value || 'GH\u20b5'; persist(); }
@@ -893,14 +1047,8 @@ async function saveExportFile(filename, text, mimeType) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
 }
-async function exportBackup() {
-  try {
-    await saveExportFile('ea-soft-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify({ ...state, townId: selectedTown, settings: { apiUrl: state.settings.apiUrl, currency: state.settings.currency } }, null, 2), 'application/json');
-  } catch (error) {
-    alert('Could not export backup: ' + error.message);
-  }
-}
-function importBackup() { const input = document.createElement('input'); input.type = 'file'; input.accept = 'application/json'; input.onchange = () => { const file = input.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { try { const imported = JSON.parse(reader.result); if ((imported.townId || 'default') !== selectedTown) throw new Error('Backup belongs to another town'); if (!Array.isArray(imported.plans) || !Array.isArray(imported.users)) throw new Error('Invalid backup'); state = { plans: imported.plans, users: imported.users, sales: state.sales, settings: { ...state.settings } }; persist(); render(); } catch { alert('That backup file is not valid.'); } }; reader.readAsText(file); }; input.click(); }
+async function exportBackup() { activeView = 'backup'; render(); }
+function importBackup() { activeView = 'backup'; render(); document.querySelector('#restore-backup-file')?.click(); }
 
 function voucherRandomNumber(limit) {
   const randomValue = new Uint32Array(1);
@@ -938,6 +1086,7 @@ async function switchTown(id) {
   state.users = []; state.plans = []; state.sales = []; dataUsage = null;
   agentLedger = { sales: [], payments: [], amountDue: 0 };
   terminalDraft = ''; terminalOutput = '';
+  terminalLastCommand = '';
   searchTerm = ''; statusFilter = 'all';
   selectedVoucherIds.clear();
   syncError = '';
@@ -1067,15 +1216,15 @@ async function deleteSelectedVouchers() {
 }
 let statusRefreshRunning = false;
 async function refreshVoucherStatus() {
-  if (!authenticated || pendingRequests || agentBusy || statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
+  if (!authenticated || backupBusy || pendingRequests || agentBusy || statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
   statusRefreshRunning = true;
   try {
     if (hasRemoteApi()) await syncRemoteState();
-    if (!editingUser && !editingPlan && activeView !== 'settings' && activeView !== 'terminal' && !document.activeElement?.matches('input, select, textarea')) render();
+    if (!editingUser && !editingPlan && activeView !== 'settings' && activeView !== 'terminal' && activeView !== 'backup' && !document.activeElement?.matches('input, select, textarea')) render();
   } catch (error) {
     syncError = error.message;
     console.error('Voucher status refresh failed:', error.message);
-    if (authenticated && !editingUser && !editingPlan && activeView !== 'terminal') render();
+    if (authenticated && !editingUser && !editingPlan && activeView !== 'terminal' && activeView !== 'backup') render();
   } finally {
     statusRefreshRunning = false;
   }

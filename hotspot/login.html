@@ -214,7 +214,7 @@
     <div class="ie-fixMinHeight">
         <div class="main">
             <div class="wrap animated fadeIn">
-                <form name="login" action="$(link-orig)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
+                <form name="login" action="$(link-login-only)" method="post" $(if chap-id) onSubmit="return doLogin()" $(endif)>
                     <input type="hidden" name="dst" value="$(link-orig)" />
                     <input type="hidden" name="popup" value="true" />
                     
@@ -258,6 +258,7 @@
                     </div>
 
                     <div id="package-list"></div>
+                    <p id="payment-status" class="info" role="status" aria-live="polite"></p>
                 </div>
 
                 <p class="help-line">Any help? WhatsApp or Call <strong>0541021978</strong></p>
@@ -414,6 +415,26 @@
             return data;
         }
 
+        function showPaymentStatus(message) {
+            document.getElementById('payment-status').textContent = message;
+        }
+
+        function loginWithVoucher(result) {
+            if (!result.username || !result.password) {
+                throw new Error('The payment server did not return voucher credentials.');
+            }
+            document.getElementById('username').value = result.username;
+            document.getElementById('password').value = result.password;
+            showPaymentStatus('Payment successful. Username: ' + result.username +
+                ' Password: ' + result.password + '. Connecting to Wi-Fi...');
+            // Use the same CHAP/PAP path as a manual login, without blocking dialogs.
+            if (typeof doLogin === 'function' && document.querySelector('form[name="sendin"]')) {
+                doLogin();
+            } else {
+                document.login.submit();
+            }
+        }
+
         async function payWithPaystack(planName, amount, button) {
             var phoneInfo = normalizeMomoNumber(
                 document.getElementById('momo_phone').value
@@ -465,7 +486,7 @@
 
                     onSuccess: async function (transaction) {
                         try {
-                            alert('Payment completed. Verifying payment and creating your Wi-Fi voucher...');
+                            showPaymentStatus('Payment completed. Verifying payment and creating your Wi-Fi voucher...');
 
                             var result = await createVoucherAfterPayment(
                                 transaction.reference,
@@ -476,36 +497,12 @@
                                 paymentInit.password || generatedPass
                             );
 
-                            document.getElementById('username').value = result.username;
-                            document.getElementById('password').value = result.password;
-
-                            alert(
-                                'Payment successful!\n\n' +
-                                'Username: ' + result.username + '\n' +
-                                'Password: ' + result.password + '\n\n' +
-                                'Logging you into the hotspot...'
-                            );
-
-                            if (
-                                typeof doLogin === 'function' &&
-                                document.querySelector('form[name="sendin"]')
-                            ) {
-                                document.sendin.username.value = result.username;
-                                document.sendin.password.value =
-                                    hexMD5(
-                                        '$(chap-id)' +
-                                        result.password +
-                                        '$(chap-challenge)'
-                                    );
-                                document.sendin.submit();
-                            } else {
-                                document.login.submit();
-                            }
+                            loginWithVoucher(result);
 
                         } catch (error) {
                             console.error(error);
                             alert(
-                                'Payment was completed, but voucher creation failed.\n\n' +
+                                'Payment was completed, but automatic connection could not finish.\n\n' +
                                 error.message +
                                 '\n\nPlease contact EA-Soft support with reference: ' +
                                 transaction.reference

@@ -42,6 +42,12 @@ try {
   assert.equal(run('usagePeriodStart("weekly", "2026-01-04").toISOString()'), '2025-12-29T00:00:00.000Z');
   assert.equal(run('moveUsagePeriod(usagePeriodStart("monthly", "2024-02-29"), "monthly", 1).toISOString()'), '2024-03-01T00:00:00.000Z');
   assert.equal(run('usageTotal(new Date("2026-01-01"), new Date("2026-01-02"))'), 100);
+  run('dataUsage.days[1].reportDeletedBytes = 100;');
+  assert.equal(run('usageTotal(new Date("2026-01-01"), new Date("2026-01-02"))'), 0);
+  run('dataUsage.days[1].bytes += 20;');
+  assert.equal(run('usageTotal(new Date("2026-01-01"), new Date("2026-01-02"))'), 20);
+  run('dataUsage.days[1].reportDeletedBytes = 0;');
+  assert.equal(run('usageTotal(new Date("2026-01-01"), new Date("2026-01-02"))'), 120);
   console.log('Data consumption checks passed: migration, baselines, deltas, duplicate/stale writes, resets, deletion, RADIUS updates, UTC period boundaries and leap years.');
 } finally {
   fs.unlinkSync(file);

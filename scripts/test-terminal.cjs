@@ -18,6 +18,8 @@ async function main() {
         const stream = accept();
         if (info.command === 'wait') return;
         if (info.command === 'large') stream.write('x'.repeat(100));
+        else if (info.command === 'invalid') stream.write('bad parameter stats (line 1 column 29)');
+        else if (info.command === 'empty') { /* Filtered print with no matches. */ }
         else { stream.write('router output: ' + info.command); stream.stderr.write('\nrouter stderr'); }
         stream.exit(0);
         stream.end();
@@ -35,6 +37,8 @@ async function main() {
     assert.match(result.output, /router output: \/system resource print/);
     assert.match(result.output, /router stderr/);
     assert.equal(result.exitCode, 0);
+    assert.match((await runCommand('invalid', options)).message, /Router reported an error/);
+    assert.match((await runCommand('empty', options)).message, /no output/);
     assert.match((await runCommand('wait', options, { timeout: 500 })).message, /timed out/);
     const large = await runCommand('large', options, { maxBytes: 32 });
     assert.equal(large.output.length, 32);
@@ -84,17 +88,25 @@ async function main() {
   const html = vm.runInContext('renderTerminal()', context);
   assert.ok(html.includes('&lt;script&gt;'));
   assert.ok(html.includes('&quot; autofocus'));
+  assert.ok(html.includes('<textarea'));
+  vm.runInContext(`terminalDraft = '/ip hotspot active print\\n/ip hotspot user print';`, context);
+  await vm.runInContext('runTerminalCommand({ preventDefault() {} })', context);
+  assert.match(vm.runInContext('terminalOutput', context), /Not sent/);
+  assert.match(vm.runInContext('terminalDraft', context), /\n/);
+  vm.runInContext(`terminalDraft = '/system resource print';`, context);
   let complete;
   let requests = 0;
   context.fetch = () => { requests++; return new Promise((resolve) => { complete = resolve; }); };
   const pending = vm.runInContext('runTerminalCommand({ preventDefault() {} })', context);
   await vm.runInContext('runTerminalCommand({ preventDefault() {} })', context);
   assert.equal(requests, 1);
+  assert.equal(vm.runInContext('terminalLastCommand', context), '/system resource print');
   vm.runInContext('authenticated = false; signOut()', context);
   complete({ status: 200, ok: true, json: async () => ({ success: true, output: 'private late output' }) });
   await pending;
   assert.equal(vm.runInContext('terminalOutput', context), '');
   assert.equal(vm.runInContext('terminalBusy', context), false);
+  assert.equal(vm.runInContext('terminalLastCommand', context), '');
   console.log('Terminal tests passed: SSH execution, host verification, authentication, limits, validation, concurrency, UI escaping, sign-out cleanup.');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

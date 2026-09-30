@@ -86,6 +86,7 @@ function readManagerData() {
     const result = { plans: Array.isArray(data.plans) ? data.plans : defaultPlans, vouchers, sales, deletedVoucherIds: Array.isArray(data.deletedVoucherIds) ? data.deletedVoucherIds : [], paymentAttempts: Array.isArray(data.paymentAttempts) ? data.paymentAttempts : [] };
     result.dataUsage = data.dataUsage || { startedAt: Date.now(), days: [] };
     result.agentPayments = Array.isArray(data.agentPayments) ? data.agentPayments : [];
+    result.reportActions = Array.isArray(data.reportActions) ? data.reportActions : [];
     // Persist migration before a delete or status update can change the voucher list.
     if (!data.dataUsage || !Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
     return result;
@@ -107,6 +108,7 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
     const latest = readManagerData();
     data.dataUsage = latest.dataUsage;
     data.agentPayments = latest.agentPayments || [];
+    data.reportActions = latest.reportActions || [];
     if (!updatePlans) data.plans = latest.plans;
     const latestVouchers = new Map(latest.vouchers.map((item) => [item.id, item]));
     data.vouchers = data.vouchers.map((item) => {
@@ -154,6 +156,48 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
 
 const { installAdminAuth } = require('./admin-auth');
 const requireAdminToken = sharedRequireAdmin || installAdminAuth(app, { env });
+app.post('/api/admin/report-history', requireAdminToken, (req, res) => {
+    const { kind, action, from, to, requestId } = req.body || {};
+    if (!['finance', 'usage'].includes(kind) || !['delete', 'restore'].includes(action) ||
+        !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from || to > 8640000000000000 ||
+        typeof requestId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(requestId) ||
+        (kind === 'usage' && (from % 86400000 || to % 86400000))) {
+        return res.status(400).json({ message: 'Choose a valid report period and action. Usage periods must use complete UTC days.' });
+    }
+    const data = readManagerData();
+    data.reportActions ||= [];
+    const previous = data.reportActions.find((item) => item.id === requestId);
+    if (previous) {
+        if (previous.kind !== kind || previous.action !== action || previous.from !== from || previous.to !== to) return res.status(409).json({ message: 'This request ID was already used for a different action.' });
+        return res.json({ success: true, affected: previous.affected });
+    }
+    const observedAt = Date.now();
+    let affected = 0;
+    if (kind === 'finance') {
+        for (const sale of data.sales) {
+            if (!(sale.createdAt >= from && sale.createdAt < to)) continue;
+            if (action === 'delete' && !sale.reportDeletedAt) {
+                sale.reportDeletedAt = observedAt;
+                sale.reportDeletedBy = req.staff.id;
+                affected++;
+            } else if (action === 'restore' && sale.reportDeletedAt) {
+                delete sale.reportDeletedAt;
+                delete sale.reportDeletedBy;
+                affected++;
+            }
+        }
+    } else {
+        for (const day of data.dataUsage.days) {
+            const timestamp = Date.parse(`${day.date}T00:00:00Z`);
+            if (!(timestamp >= from && timestamp < to)) continue;
+            const next = action === 'delete' ? day.bytes : 0;
+            if ((day.reportDeletedBytes || 0) !== next) { day.reportDeletedBytes = next; affected++; }
+        }
+    }
+    data.reportActions.push({ id: requestId, kind, action, from, to, affected, createdAt: observedAt, managerId: req.staff.id });
+    saveManagerData(data);
+    res.json({ success: true, affected });
+});
 require('./agent-portal').installAgentPortal(app, {
     requireAdmin: requireAdminToken, readManagerData, saveManagerData, writeManagerData,
     generateVoucherUsername, generateVoucherPassword, profileNameForPlan, planDurationMs,
@@ -1534,7 +1578,10 @@ app.post('/api/paystack/webhook', async (req, res) => {
             if (syncing) return;
             syncing = true;
             try {
-                if (!sharedVouchers) mergeMikroTikUsers(readManagerData(), await readMikroTikHotspotUsers());
+                if (!sharedVouchers) {
+                    try { mergeMikroTikUsers(readManagerData(), await readMikroTikHotspotUsers()); }
+                    catch (error) { console.error('Town user refresh failed:', env.TOWN_ID || 'default', error.message); }
+                }
                 await syncCalendarActivations();
             } catch (error) { console.error('Town usage/calendar sync failed:', env.TOWN_ID || 'default', error.message); }
             finally { syncing = false; }
@@ -1568,7 +1615,8 @@ app.post('/api/paystack/webhook', async (req, res) => {
 module.exports = { createTownApp };
 if (require.main === module) {
     const { createMultiTownApp } = require('./towns');
-    const manager = createMultiTownApp({ createTownApp });
+    const manager = createMultiTownApp({ createTownApp,
+        requestRestart: process.env.pm_id !== undefined ? () => setTimeout(() => process.exit(0), 500) : undefined });
     manager.app.listen(Number(process.env.PORT || 3000), () => {
         manager.startJobs();
         console.log('EA-Soft server ready for', manager.townCount, 'town(s).');
