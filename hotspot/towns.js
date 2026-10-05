@@ -65,7 +65,7 @@ function createMultiTownApp({ env = process.env, createTownApp, authInstaller = 
     const shared = env.VOUCHER_AUTH_MODE === 'radius' ? { reservations: new Set() } : null;
     const instances = new Map(towns.map((town) => [town.id, createTownApp(town.env, requireAdmin, shared)]));
     backupService = installWorkspaceBackup(app, { env, towns, instances, requireAdmin, requestRestart,
-        stopJobs() { jobsStarted = false; for (const instance of instances.values()) instance.stopJobs(); } });
+        stopJobs() { jobsStarted = false; backupService?.stopJobs(); for (const instance of instances.values()) instance.stopJobs(); } });
     if (shared) {
         const { createSharedVouchers, installRadiusRest } = require('./shared-vouchers');
         const service = createSharedVouchers({ instances });
@@ -171,8 +171,8 @@ function createMultiTownApp({ env = process.env, createTownApp, authInstaller = 
     // Existing portals continue to operate on the original router.
     app.use(instances.get('default').app);
     return { app, get townCount() { return towns.length; },
-        startJobs() { jobsStarted = true; for (const instance of instances.values()) instance.startJobs(); },
-        stopJobs() { jobsStarted = false; for (const instance of instances.values()) instance.stopJobs(); } };
+        startJobs() { jobsStarted = true; backupService.startJobs(); for (const instance of instances.values()) instance.startJobs(); },
+        stopJobs() { jobsStarted = false; backupService.stopJobs(); for (const instance of instances.values()) instance.stopJobs(); } };
 }
 
 module.exports = { loadTowns, createMultiTownApp };

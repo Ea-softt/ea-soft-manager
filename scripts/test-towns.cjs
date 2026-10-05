@@ -102,7 +102,7 @@ async function main() {
         const secondFile = path.join(directory, 'towns', 'town-two.json');
         assert.equal(JSON.parse(fs.readFileSync(secondFile)).sales.length, 2);
         assert.equal(JSON.parse(fs.readFileSync(env.DATA_FILE)).sales.length, 2);
-        manager.startJobs(); assert.equal(timers.length, 8);
+        manager.startJobs(); assert.equal(timers.length, 12);
         const beforeJobs = calls.length;
         await Promise.all(timers.map((fn) => fn()));
         assert.deepEqual(new Set(calls.slice(beforeJobs).map((call) => call.host)), new Set(['router-one', 'router-two']));
@@ -157,7 +157,7 @@ async function main() {
         const beforeAddTimers = timers.length;
         const added = await request('/api/admin/towns', 'POST', townFields);
         assert.equal(added.status, 201);
-        assert.equal(timers.length, beforeAddTimers + 4);
+        assert.equal(timers.length, beforeAddTimers + 6);
         assert.equal(radiusManager.townCount, 3);
         assert.doesNotMatch(JSON.stringify(added.data), /private-third-password|MIKROTIK_PASSWORD/);
         assert.equal((await request(`/api/towns/${added.data.town.id}/admin/state`)).status, 200);

@@ -33,7 +33,7 @@ function createSharedVouchers({ instances, now = Date.now }) {
     }
     function valid(found) {
         const { voucher } = found;
-        if (voucher.radiusRevoked || voucher.status === 'expired' || voucher.provisioning === 'pending' ||
+        if (voucher.suspended || voucher.radiusRevoked || voucher.status === 'expired' || voucher.provisioning === 'pending' ||
             (voucher.expiresAt != null && (!Number.isFinite(voucher.expiresAt) || voucher.expiresAt <= now()))) throw new Error('Voucher expired or unavailable.');
         const duration = Number(voucher.durationMs);
         if (!Number.isSafeInteger(duration) || duration <= 0) throw new Error('Voucher duration is unavailable; correct it before enabling roaming.');

@@ -43,7 +43,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'x-paystack-signature', 'Authorization']
 }));
 
-const BACKEND_VERSION = 'data-consumption-2026-09-27';
+const BACKEND_VERSION = 'business-operations-2026-09-30';
 const DATA_FILE = env.DATA_FILE || path.join(__dirname, 'data', 'manager.json');
 
 const defaultPlans = [
@@ -87,6 +87,7 @@ function readManagerData() {
     result.dataUsage = data.dataUsage || { startedAt: Date.now(), days: [] };
     result.agentPayments = Array.isArray(data.agentPayments) ? data.agentPayments : [];
     result.reportActions = Array.isArray(data.reportActions) ? data.reportActions : [];
+    result.operations = data.operations || { expenses: [], audit: [], requests: [] };
     // Persist migration before a delete or status update can change the voucher list.
     if (!data.dataUsage || !Array.isArray(data.sales) || sales.length !== data.sales.length) saveManagerData(result);
     return result;
@@ -109,11 +110,17 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
     data.dataUsage = latest.dataUsage;
     data.agentPayments = latest.agentPayments || [];
     data.reportActions = latest.reportActions || [];
+    data.operations = latest.operations;
     if (!updatePlans) data.plans = latest.plans;
     const latestVouchers = new Map(latest.vouchers.map((item) => [item.id, item]));
     data.vouchers = data.vouchers.map((item) => {
         const current = latestVouchers.get(item.id);
         if (!current) return item;
+        if ((current.operationsRevision || 0) > (item.operationsRevision || 0)) {
+            item = { ...item, operationsRevision: current.operationsRevision, suspended: current.suspended,
+                activatedAt: current.activatedAt, activationSource: current.activationSource, expiresAt: current.expiresAt,
+                durationMs: current.durationMs, dataLimit: current.dataLimit, password: current.password, status: current.status, expirySchedulePending: current.expirySchedulePending };
+        }
         if (!current.radiusSessions && item.dataUsageUpdatedAt > (current.dataUsageUpdatedAt || 0)) {
             if (current.dataUsageUpdatedAt >= data.dataUsage.startedAt && Number.isSafeInteger(current.dataConsumedBytes)) {
                 const delta = item.dataConsumedBytes >= current.dataConsumedBytes ? item.dataConsumedBytes - current.dataConsumedBytes : item.dataConsumedBytes;
@@ -156,6 +163,17 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
 
 const { installAdminAuth } = require('./admin-auth');
 const requireAdminToken = sharedRequireAdmin || installAdminAuth(app, { env });
+async function operationRouter(command, args = []) {
+    const api = new RouterOSAPI(getMikroTikApiOptions());
+    try { await api.connect(); return await api.write(command, args); }
+    finally { await api.close().catch(() => {}); }
+}
+const businessOperations = require('./business-operations').installBusinessOperations(app, {
+    requireAdmin: requireAdminToken, read: readManagerData, save: saveManagerData,
+    router: operationRouter, shared: sharedVouchers, duration: activationDuration,
+    schedule: scheduleCalendarExpiration, fulfill: (...args) => fulfillPayment(...args), sms: sendVoucherSms
+});
+app.get('/api/public/customer-portal', (_req, res) => res.sendFile(path.join(__dirname, 'customer.html')));
 app.post('/api/admin/report-history', requireAdminToken, (req, res) => {
     const { kind, action, from, to, requestId } = req.body || {};
     if (!['finance', 'usage'].includes(kind) || !['delete', 'restore'].includes(action) ||
@@ -842,16 +860,6 @@ async function scheduleCalendarExpiration(username, expiresAt) {
     try {
         await api.connect();
 
-        // Remove an old scheduler with the same name.
-        try {
-            await api.write(
-                '/system/scheduler/remove',
-                [`=numbers=${schedulerName}`]
-            );
-        } catch {
-            // Scheduler may not exist.
-        }
-
         if (expiresAt <= Date.now()) {
             await api.write(
                 '/ip/hotspot/user/set',
@@ -866,29 +874,25 @@ async function scheduleCalendarExpiration(username, expiresAt) {
 
         const expiryDate = new Date(expiresAt);
 
-        const startDate =
-            formatRouterOsDate(expiryDate);
-
-        const startTime =
-            formatRouterOsTime(expiryDate);
+        const [routerClock] = await api.write('/system/clock/print');
+        const localExpiry = require('./router-time').schedulerTime(expiresAt, routerClock);
+        const startDate = localExpiry.date;
+        const startTime = localExpiry.time;
 
         const onEvent =
-            `:local u "${user}"; ` +
+            `:local u "${user.replace(/[\\"$]/g, '\\$&')}"; ` +
             `/ip hotspot active remove [find user=$u]; ` +
             `/ip hotspot user set [find name=$u] disabled=yes; ` +
             `/system scheduler remove [find name="${schedulerName}"];`;
 
-        await api.write(
-            '/system/scheduler/add',
-            [
-                `=name=${schedulerName}`,
-                '=interval=0s',
-                `=start-date=${startDate}`,
-                `=start-time=${startTime}`,
-                `=on-event=${onEvent}`,
-                '=policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon'
-            ]
-        );
+        const existing = (await api.write('/system/scheduler/print')).find(item => item.name === schedulerName);
+        const scheduleFields = [
+            `=name=${schedulerName}`, '=interval=0s', '=disabled=no',
+            `=start-date=${startDate}`, `=start-time=${startTime}`, `=on-event=${onEvent}`,
+            '=policy=read,write,test'
+        ];
+        await api.write(existing ? '/system/scheduler/set' : '/system/scheduler/add',
+            existing ? [`=.id=${existing['.id']}`, ...scheduleFields] : scheduleFields);
 
         console.log(
             `Calendar expiry scheduled: ${user} | ` +
@@ -949,6 +953,10 @@ async function performCalendarActivationSync() {
             if (voucher.status !== status) { voucher.status = status; changed = true; }
         }
         for (const voucher of data.vouchers) {
+            if (voucher.expiresAt > observedAt && !voucher.timezoneScheduleVersion && !voucher.expirySchedulePending) {
+                voucher.expirySchedulePending = true;
+                changed = true;
+            }
             if (voucher.expiresAt && voucher.expiresAt <= observedAt && voucher.status !== 'expired') {
                 voucher.status = 'expired';
                 voucher.expirySchedulePending = true;
@@ -965,6 +973,7 @@ async function performCalendarActivationSync() {
                 const current = latest.vouchers.find((item) => item.id === voucher.id);
                 if (current && current.expiresAt === voucher.expiresAt) {
                     current.expirySchedulePending = false;
+                    current.timezoneScheduleVersion = 1;
                     writeManagerData(latest);
                 }
             } catch (error) { console.error('Expiry scheduling will retry:', voucher.username, error.message); }
@@ -1588,6 +1597,8 @@ app.post('/api/paystack/webhook', async (req, res) => {
         };
         timers.push(setTimeout(recoverPendingPayments, 1000), setInterval(recoverPendingPayments, 30000),
             setTimeout(sync, 5000), setInterval(sync, 10000));
+        timers.push(setTimeout(() => businessOperations.refresh().catch(console.error), 7000),
+            setInterval(() => businessOperations.refresh().catch(console.error), 60000));
     }
     return { app, readManagerData, startJobs,
         updateSharedVoucher(id, changes) {

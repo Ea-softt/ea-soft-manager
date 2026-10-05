@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EA-Soft — My Wi-Fi</title>
+<style>body{font:16px/1.5 system-ui;background:#f1f7f4;color:#123d32;margin:0}main{max-width:640px;margin:32px auto;padding:20px}section{background:white;border-radius:16px;padding:24px;margin:16px 0}label{display:grid;margin:12px 0;gap:5px}input,select,button{font:inherit;padding:12px;border:1px solid #bdd2c9;border-radius:8px;box-sizing:border-box;width:100%}button{background:#07543f;color:white;cursor:pointer}pre{white-space:pre-wrap}a{color:#07543f}</style></head>
+<body><main><h1>My EA-Soft Wi-Fi</h1><p>Use the voucher bought in this town to check your allowance and expiry.</p>
+<section><h2>Check my voucher</h2><form id="balance"><label>Username<input name="username" required autocomplete="username"></label><label>Password<input name="password" type="password" required autocomplete="current-password"></label><button>Check balance</button></form><pre id="result" role="status"></pre></section>
+<section><h2>Recover my credentials</h2><p>We can resend credentials to the phone number saved on your voucher.</p><form id="recover"><label>Voucher username<input name="username" required></label><label>Purchase phone number<input name="phone" type="tel" required></label><button>Send to my saved phone</button></form><p id="recovery" role="status"></p></section>
+<section><h2>Buy another package</h2><p>Your existing voucher keeps its original expiry. A new purchase creates a separate voucher.</p><form id="buy"><label>Package<select name="plan" required></select></label><label>Mobile money number<input name="phone" type="tel" required></label><button>Continue to Paystack</button></form><p id="purchase" role="status"></p></section></main>
+<script>
+const endpoint = name => new URL(name, location.href).href;
+async function request(name, body) {
+ const response = await fetch(endpoint(name), {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const result = await response.json(); if(!response.ok || !result.success) throw Error(result.message || 'Request failed.'); return result;
+}
+function bind(id, output, work) {
+ document.getElementById(id).onsubmit = async event => {
+  event.preventDefault(); const form=event.target, button=form.querySelector('button'), status=document.getElementById(output);
+  button.disabled=true; status.textContent='Please wait…';
+  try { await work(Object.fromEntries(new FormData(form)),status); }
+  catch(error) { status.textContent=error.message; }
+  finally { button.disabled=false; }
+ };
+}
+bind('balance','result',async(body,out)=>{
+ const {customer:c}=await request('customer',body);
+ document.querySelector('#balance input[type=password]').value='';
+ out.textContent='Status: '+c.status+'\nRemaining data: '+(c.remainingBytes/1024**3).toFixed(2)+' GB\nExpiry: '+(c.expiresAt?new Date(c.expiresAt).toLocaleString():'Starts on first login')+'\nUsage last updated: '+(c.dataUsageUpdatedAt?new Date(c.dataUsageUpdatedAt).toLocaleString():'Not available');
+});
+bind('recover','recovery',async(body,out)=>{out.textContent=(await request('recover-customer',body)).message;});
+let plans=[];
+fetch(endpoint('plans')).then(r=>r.json()).then(data=>{
+ plans=data.plans||[]; const select=document.querySelector('#buy select');
+ for(const plan of plans){const option=document.createElement('option');option.value=plan.id;option.textContent=plan.name+' — GHS '+Number(plan.price).toFixed(2);select.append(option);}
+}).catch(()=>{document.getElementById('purchase').textContent='Packages unavailable. Please try again later.';});
+bind('buy','purchase',async(body,out)=>{
+ const plan=plans.find(p=>p.id===body.plan); if(!plan)throw Error('Select an available package.');
+ const data=await request('../initiate-payment',{planName:plan.name,amount:plan.price,phone:body.phone});
+ const destination=new URL(data.authorization_url);
+ if(destination.protocol!=='https:' || !/(^|\.)paystack\.(co|com)$/.test(destination.hostname))throw Error('Checkout address was not accepted.');
+ out.textContent='Opening secure payment. After payment, return to your Wi-Fi login page. Credentials are sent to your purchase phone.';
+ location.assign(destination.href);
+});
+</script></body></html>

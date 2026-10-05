@@ -97,6 +97,9 @@ let bulkDeleting = false;
 let terminalDraft = '';
 let terminalOutput = '';
 let terminalBusy = false;
+let operationsData = null, operationsError = '', operationsBusy = false, operationsQuery = '', operationCustomer = '';
+let backupSchedule = null, scheduleLoading = false, scheduleError = '';
+let pendingOperation = null;
 let terminalLastCommand = '';
 const selectedVoucherIds = new Set();
 
@@ -104,6 +107,9 @@ function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings
 persist();
 
 function signOut() {
+  operationsData = null; operationsError = ''; operationsBusy = false; operationsQuery = ''; operationCustomer = '';
+  backupSchedule = null; scheduleLoading = false; scheduleError = '';
+  pendingOperation = null;
   if (authenticated) apiRequest('/api/admin/session', { method: 'DELETE' }).catch(() => {});
   terminalDraft = '';
   terminalOutput = '';
@@ -247,7 +253,7 @@ async function apiRequest(pathname, options = {}) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
   }
-  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment|report-history)$/;
+  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment|report-history|operations(?:\?.*)?)$/;
   if (townRoutes.test(pathname)) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
@@ -292,7 +298,7 @@ async function performApiRequest(pathname, options = {}) {
     error.status = 401;
     throw error;
   }
-  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
+  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload the complete server update, including business-operations.js, router-time.js, customer.html, workspace-backup.js, server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
   if (!response.ok || data.success === false) throw new Error(data.message || `API request failed (${response.status})`);
   return data;
 }
@@ -402,6 +408,7 @@ function render() {
           ${navItem('plans', 'Tags', 'Plans & pricing')}
           ${navItem('finances', 'CalendarDays', 'Finances')}
           ${navItem('consumption', 'Database', 'Data consumption')}
+          ${navItem('operations', 'Search', 'Business operations')}
           ${navItem('terminal', 'Terminal', 'Terminal')}
           ${navItem('settings', 'Settings', 'Settings')}
           ${navItem('backup', 'Download', 'Backup & restore')}
@@ -420,6 +427,8 @@ function render() {
   bindAgentManagement();
   bindReportHistory();
   bindBackup();
+  bindOperations();
+  bindBackupSchedule();
 }
 
 function agentSalesTable(sales, showAgent = false) {
@@ -617,8 +626,35 @@ function bindAgentManagement() {
   }));
 }
 
+function renderBackupSchedule() {
+  const s = backupSchedule;
+  return `<section class="panel settings-panel"><h2>Automatic encrypted backups</h2><p>Saved on this server. Download copies regularly to keep an off-server backup. The scheduling password is stored privately on the server; retain your own copy for restore.</p><p>${s ? `Status: ${s.enabled ? 'Enabled' : 'Disabled'} · Last success: ${s.lastSuccessAt ? escapeText(formatDate(s.lastSuccessAt)) : 'None yet'} · Next attempt: ${s.enabled && s.nextAt ? escapeText(formatDate(s.nextAt)) : 'Not scheduled'}` : 'Loading schedule…'}</p><p role="alert">${escapeText(scheduleError || s?.error || '')}</p><form id="backup-schedule-form"><fieldset ${scheduleLoading || backupBusy || !s ? 'disabled' : ''}><label>Automatic backups<select name="enabled"><option value="false" ${!s?.enabled ? 'selected' : ''}>Disabled</option><option value="true" ${s?.enabled ? 'selected' : ''}>Enabled</option></select></label><label>Every (hours)<input name="hours" type="number" min="1" max="168" value="${s?.hours || 24}" required /></label><label>Keep latest copies<input name="retention" type="number" min="1" max="90" value="${s?.retention || 7}" required /></label><label>Encryption password (required when first enabling)<input name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm new password<input name="confirm" type="password" autocomplete="new-password" /></label><button class="primary-button">Save schedule</button></fieldset></form><button id="schedule-refresh" class="secondary-button">Refresh schedule status</button></section>`;
+}
+async function loadBackupSchedule() {
+  if (scheduleLoading) return;
+  scheduleLoading = true; const generation = authGeneration;
+  try { const result = await apiRequest('/api/admin/backup/schedule'); if (generation === authGeneration) { backupSchedule = result.schedule; scheduleError = ''; } }
+  catch (e) { if (generation === authGeneration) scheduleError = e.message; }
+  finally { if (generation === authGeneration) { scheduleLoading = false; if (activeView === 'backup') render(); } }
+}
+function bindBackupSchedule() {
+  if (activeView !== 'backup') return;
+  document.querySelector('#schedule-refresh')?.addEventListener('click', loadBackupSchedule);
+  document.querySelector('#backup-schedule-form')?.addEventListener('submit', async e => {
+    e.preventDefault(); if (scheduleLoading || backupBusy) return;
+    const f = e.target.elements;
+    if (f.password.value !== f.confirm.value) { scheduleError = 'The new backup passwords do not match.'; render(); return; }
+    const body = { enabled: f.enabled.value === 'true', hours: Number(f.hours.value), retention: Number(f.retention.value), password: f.password.value };
+    const generation = authGeneration; scheduleLoading = true;
+    try { const result = await apiRequest('/api/admin/backup/schedule', { method: 'POST', body: JSON.stringify(body) }); if (generation === authGeneration) { backupSchedule = result.schedule; scheduleError = ''; } }
+    catch (error) { if (generation === authGeneration) scheduleError = error.message; }
+    finally { if (generation === authGeneration) { scheduleLoading = false; if (activeView === 'backup') render(); } }
+  });
+  if (!backupSchedule && !scheduleLoading && !scheduleError) loadBackupSchedule();
+}
+
 function renderBackup() {
-  return `<div class="heading-row"><div><p class="eyebrow">WORKSPACE RECOVERY</p><h1>Backup & restore</h1><p class="subhead">Protect your manager records across every town.</p></div></div>
+  return `${renderBackupSchedule()}<div class="heading-row"><div><p class="eyebrow">WORKSPACE RECOVERY</p><h1>Backup & restore</h1><p class="subhead">Protect your manager records across every town.</p></div></div>
     <section class="panel backup-scope"><h2>One backup for all your records</h2><p>Includes manager and agent accounts, plans, voucher credentials, sales, payments, usage history, and report corrections for every configured town.</p><p>Server keys and MikroTik configuration stay unchanged. Restore requires the same town IDs and replaces all current records, including account passwords and balances. Router-only changes are not restored.</p></section>
     ${backupMessage ? `<p class="staff-notice" role="status">${escapeText(backupMessage)}</p>` : ''}
     <div class="backup-grid"><section class="panel settings-panel"><div><p class="eyebrow">SAVE A COPY</p><h2>Create backup</h2><p>The downloaded file is encrypted. Keep its password somewhere safe; it is required to restore.</p></div><form id="backup-export-form"><fieldset ${backupBusy ? 'disabled' : ''}><label>Backup password<input name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><label>Confirm backup password<input name="confirmPassword" type="password" required minlength="12" maxlength="256" autocomplete="new-password" /></label><button class="primary-button">${icon('Download', 16)} Download full backup</button></fieldset><p class="backup-error" role="alert"></p></form></section>
@@ -694,6 +730,70 @@ function bindBackup() {
   });
 }
 
+function renderOperations() {
+  const d = operationsData;
+  const text = value => escapeText(String(value ?? 'Unavailable'));
+  const stamp = value => value ? text(formatDate(value)) : 'Not recorded';
+  const selected = d?.customers.find(c => c.id === operationCustomer);
+  const disabled = operationsBusy ? 'disabled' : '';
+  const reason = '<label>Reason / note<input name="reason" required maxlength="300" /></label>';
+  return `<div class="heading-row"><div><p class="eyebrow">BUSINESS OPERATIONS</p><h1>Customers, router & profit</h1><p>Updates are saved with your account and reason. Voucher time continues during suspension.</p></div><button id="operations-refresh" class="secondary-button" ${disabled}>Refresh checks</button></div>
+    ${operationsError ? `<p class="panel" role="alert">${text(operationsError)}</p>` : ''}
+    <form id="operations-search" class="toolbar"><label>Username or phone<input name="query" value="${text(operationsQuery)}" maxlength="100" /></label><button class="primary-button" ${disabled}>Search</button></form>
+    ${!d ? '<p class="panel">Loading business operations…</p>' : `
+    <section class="panel"><h2>Router health</h2><p>${d.router.error ? text(d.router.error) : `${d.router.sessions ?? 'Unknown'} connected sessions · CPU ${text(d.router.resources['cpu-load'])}% · RouterOS ${text(d.router.resources.version)}`}</p><p>Last successful check: ${stamp(d.router.lastSuccessAt)} · Timezone: ${text(d.router.clock['time-zone-name'])}</p></section>
+    <section class="panel"><h2>Alerts</h2>${d.alerts.length ? `<ul>${d.alerts.map(a => `<li>${text(a.username || '')} ${text(a.message)}</li>`).join('')}</ul>` : '<p>No issues detected by the latest checks.</p>'}</section>
+    <section class="panel"><h2>Customer troubleshooting</h2><p>Showing up to 100 matching vouchers. Select a customer for history and actions.</p><div class="table-scroll"><table><thead><tr><th>Customer</th><th>Status</th><th>Connected</th><th>First login</th><th>Expiry</th><th>Data used</th></tr></thead><tbody>${d.customers.map(c => `<tr><td><button class="text-button" data-operation-customer="${text(c.id)}">${text(c.username)}</button><small>${text(c.phone || '')}</small></td><td>${text(c.status)}</td><td>${c.connected === null ? 'Unknown' : c.connected ? 'Yes' : 'No'}</td><td>${stamp(c.activatedAt)}</td><td>${stamp(c.expiresAt)}</td><td>${formatDataUsage(c.dataConsumedBytes)} / ${c.dataLimit} GB</td></tr>`).join('')}</tbody></table></div>
+    ${selected ? `<h3>Voucher ${text(selected.username)}</h3><p>Payment: ${text(selected.paymentReference || 'Manual sale')} · Activation source: ${text(selected.activationSource || 'Not recorded')}</p><p>Remaining allowance: ${formatDataUsage(selected.remainingBytes)} · Usage updated: ${stamp(selected.dataUsageUpdatedAt)}</p>
+    <ul>${selected.sales.map(s => `<li>${stamp(s.createdAt)} · ${money(s.amount)} ${s.cleared ? '(cleared from reports)' : ''}</li>`).join('')}</ul>
+    <h4>Recent router events</h4><pre class="operation-events">${text(selected.events.map(e => `${e.time} ${e.message}`).join('\n') || 'No retained events for this voucher.')}</pre>
+    <form data-operation-form><input type="hidden" name="voucherId" value="${text(selected.id)}" /><label>Action<select name="action">${d.localActions ? '<option value="extend">Extend validity (hours)</option><option value="add-data">Add allowance (GB)</option><option value="suspend">Suspend</option><option value="resume">Resume</option><option value="replace-credentials">Replace password (keep time and allowance)</option>' : ''}<option value="resend">Resend credentials to saved phone</option></select></label><label>Additional hours / GB (for extension or data only)<input name="value" type="number" min="0.01" step="0.01" /></label>${reason}<button class="primary-button" ${disabled}>Apply action</button></form><p>Extensions start from the later of current expiry or now. Unused vouchers retain first-login activation. Resending uses the configured SMS provider.</p>` : ''}</section>
+    <section class="panel"><h2>Payment reconciliation</h2><p>Verifies the transaction with Paystack before issuing or recovering its voucher. Repeated references do not create duplicate sales.</p><form data-operation-form><input type="hidden" name="action" value="reconcile" /><label>Payment reference<input name="reference" required maxlength="200" /></label>${reason}<button class="primary-button" ${disabled}>Verify payment</button></form><details><summary>${d.payments.length} references awaiting verification</summary><ul>${d.payments.map(p => `<li>${text(p.reference)} · ${text(p.username || '')}</li>`).join('')}</ul></details></section>
+    <section class="panel"><h2>Expenses & profit</h2><p>All-time reported revenue: <strong>${money(d.profit.revenue)}</strong> · Expenses: <strong>${money(d.profit.expenses)}</strong> · Net: <strong>${money(d.profit.net)}</strong></p><p>Net equals reported sales less recorded expenses. Enter commissions and equipment costs as expenses.</p><form data-operation-form><input type="hidden" name="action" value="expense" /><label>Category<select name="category"><option>Internet</option><option>Electricity</option><option>Equipment</option><option>Agent commission</option><option>Other</option></select></label><label>Amount<input type="number" name="amount" min="0.01" step="0.01" required /></label>${reason}<button class="primary-button" ${disabled}>Record expense</button></form><ul>${d.expenses.map(e => `<li>${stamp(e.createdAt)} · ${text(e.category)} · ${money(e.cents / 100)} · ${text(e.note)} ${e.voidedAt ? '(voided)' : `<button class="text-button" data-void-expense="${text(e.id)}" ${disabled}>Void</button>`}</li>`).join('')}</ul></section>
+    <section class="panel"><h2>Recent operations</h2><ul>${d.requests.map(r => `<li>${text(r.action)} · ${text(r.state)} · ${text(r.reason)} ${r.error ? '— ' + text(r.error) : ''}</li>`).join('')}</ul><h3>Audit history</h3><ul>${d.audit.map(a => `<li>${stamp(a.at)} · ${text(a.actor)} · ${text(a.action)} · ${text(a.reason || '')}</li>`).join('')}</ul></section>`}`;
+}
+async function loadOperations() {
+  if (operationsBusy || !authenticated || selectedTown === 'all') return;
+  operationsBusy = true;
+  const town = selectedTown, generation = authGeneration;
+  try {
+    // apiRequest routes the base endpoint to the selected town; query goes in a separate URL suffix.
+    const result = await apiRequest('/api/admin/operations?q=' + encodeURIComponent(operationsQuery));
+    if (town !== selectedTown || generation !== authGeneration) return;
+    operationsData = result; operationsError = '';
+  } catch (e) { if (town === selectedTown && generation === authGeneration) operationsError = e.message; }
+  finally { if (generation === authGeneration) { operationsBusy = false; if (activeView === 'operations' && town === selectedTown) render(); } }
+}
+async function submitOperation(body) {
+  if (operationsBusy) return;
+  operationsBusy = true;
+  const generation = authGeneration, town = selectedTown;
+  const key = JSON.stringify({ town, body });
+  if (pendingOperation?.key !== key) pendingOperation = { key, requestId: crypto.randomUUID() };
+  try {
+    await apiRequest('/api/admin/operations', { method: 'POST', body: JSON.stringify({ ...body, requestId: pendingOperation.requestId }) });
+    if (generation !== authGeneration || town !== selectedTown) return;
+    pendingOperation = null;
+    operationsError = ''; operationsData = null;
+  } catch (e) { if (generation === authGeneration && town === selectedTown) operationsError = e.message; }
+  finally { if (generation === authGeneration) { operationsBusy = false; if (activeView === 'operations' && town === selectedTown) render(); } }
+}
+function bindOperations() {
+  if (activeView !== 'operations' || selectedTown === 'all') return;
+  document.querySelector('#operations-refresh')?.addEventListener('click', loadOperations);
+  document.querySelector('#operations-search')?.addEventListener('submit', e => { e.preventDefault(); operationsQuery = e.target.elements.query.value.trim(); loadOperations(); });
+  document.querySelectorAll('[data-operation-customer]').forEach(b => b.onclick = () => { operationCustomer = b.dataset.operationCustomer; render(); });
+  document.querySelectorAll('[data-operation-form]').forEach(f => f.onsubmit = e => {
+    e.preventDefault(); const body = Object.fromEntries(new FormData(f));
+    if (confirm('Apply ' + body.action + '? ' + body.reason)) submitOperation(body);
+  });
+  document.querySelectorAll('[data-void-expense]').forEach(b => b.onclick = () => {
+    const reason = prompt('Reason for voiding this expense:');
+    if (reason?.trim()) submitOperation({ action: 'void-expense', expenseId: b.dataset.voidExpense, reason });
+  });
+  if (!operationsData && !operationsError && !operationsBusy) loadOperations();
+}
+
 function renderTerminal() {
   return `<div class="heading-row"><div><p class="eyebrow">ROUTER MANAGEMENT</p><h1>MikroTik Terminal</h1></div></div>
     <section class="panel terminal-panel"><p>Run one complete RouterOS command at a time. Paste commands separately; do not join them with spaces or commas. Each run starts at the root menu. Interactive prompts are not supported; use a count or duration for continuous commands.</p>
@@ -763,6 +863,7 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (activeView === 'operations') return selectedTown === 'all' ? '<section class="panel"><h1>Business operations</h1><p>Select a town to troubleshoot customers, review payments and manage expenses.</p></section>' : renderOperations();
   if (activeView === 'backup') return renderBackup();
   if (activeView === 'agents') return renderAgentManagement();
   if (activeView === 'consumption') return renderDataConsumption();
@@ -903,6 +1004,7 @@ function renderOverview({ activeUsers, waitingUsers, revenue, expiring }) {
     <div class="content-grid"><section class="panel wide-panel"><div class="panel-head"><div><p class="eyebrow">LATEST ACTIVITY</p><h2>Recent vouchers</h2></div><button class="text-button" data-view="users">View all ${icon('ChevronDown')}</button></div>${userTable(recent)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR CATALOG</p><h2>Plans</h2></div><button class="icon-button small" data-action="new-plan">${icon('Plus')}</button></div><div class="mini-plans">${state.plans.slice(0, 5).map(planMini).join('')}</div></section></div>`;
 }
 function voucherDisplayStatus(user) {
+  if (user.suspended) return 'suspended';
   if (user.status === 'expired' || (user.expiresAt != null && user.expiresAt <= Date.now())) return 'expired';
   if (user.provisioning === 'pending') return 'pending';
   if (!user.activatedAt && !user.expiresAt) return 'awaiting';
@@ -922,7 +1024,7 @@ function overviewRevenueByStatus() {
 }
 function voucherStatusBadge(user) {
   const status = voucherDisplayStatus(user);
-  const labels = { active: 'Active', expired: 'Expired', awaiting: 'Awaiting first login', pending: 'Paid — activation pending' };
+  const labels = { suspended: 'Suspended', active: 'Active', expired: 'Expired', awaiting: 'Awaiting first login', pending: 'Paid — activation pending' };
   return `<span class="pill ${status}">${labels[status]}</span>`;
 }
 function renderUsers() {
@@ -1093,6 +1195,7 @@ async function switchTown(id) {
   if (id === selectedTown || pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan) return;
   if (id !== 'all' && !towns.some((town) => town.id === id)) return;
   selectedTown = id;
+  operationsData = null; operationsError = ''; operationsQuery = ''; operationCustomer = '';
   hasLoadedState = false;
   financeAvailable = false;
   dataUsage = null;

@@ -50,6 +50,9 @@ function validate(snapshot, towns, env) {
     const usernames = new Set();
     for (const town of snapshot.towns) {
         const data = town.data;
+        if (data?.operations !== undefined && (!obj(data.operations) ||
+            !['expenses', 'audit', 'requests'].every(k => list(data.operations[k]) && unique(data.operations[k], 'id')))) fail();
+        for (const expense of data?.operations?.expenses || []) if (!Number.isSafeInteger(expense.cents) || expense.cents <= 0 || !Number.isFinite(expense.createdAt)) fail();
         if (!obj(data) || !['plans', 'vouchers', 'sales', 'paymentAttempts', 'deletedVoucherIds', 'agentPayments', 'reportActions'].every((key) => list(data[key])) ||
             !['plans', 'vouchers', 'sales', 'agentPayments', 'reportActions'].every((key) => unique(data[key], 'id')) ||
             !data.deletedVoucherIds.every(id) || !obj(data.dataUsage) || !Number.isFinite(data.dataUsage.startedAt) || !list(data.dataUsage.days)) fail();
@@ -80,6 +83,26 @@ function installWorkspaceBackup(app, { env, towns, instances, requireAdmin, requ
     const files = locations(env);
     const previews = new Map();
     let busy = false, restoring = false;
+    let scheduleTimer;
+    const scheduleFile = path.join(files.directory, 'schedule-settings.json');
+    const readSchedule = () => fs.existsSync(scheduleFile) ? JSON.parse(fs.readFileSync(scheduleFile, 'utf8')) : { enabled: false, hours: 24, retention: 7 };
+    const publicSchedule = config => ({ enabled: !!config.enabled, hours: config.hours, retention: config.retention,
+        lastSuccessAt: config.lastSuccessAt || null, nextAt: config.nextAt || null, error: config.error || '' });
+    async function scheduledBackup() {
+        const config = readSchedule();
+        if (!config.enabled || busy || restoring || (config.nextAt || 0) > Date.now()) return;
+        busy = true;
+        try {
+            const current = snapshot(); validate(current, towns, env);
+            const encrypted = await encrypt(current, config.password);
+            const name = `scheduled-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.json`;
+            privateWrite(path.join(files.directory, name), encrypted);
+            const old = fs.readdirSync(files.directory).filter(n => /^scheduled-\d+-[a-f0-9]{8}\.json$/.test(n)).sort().reverse().slice(config.retention);
+            for (const name of old) fs.unlinkSync(path.join(files.directory, name));
+            config.lastSuccessAt = Date.now(); config.nextAt = Date.now() + config.hours * 3600000; config.error = '';
+        } catch (e) { config.error = 'Scheduled backup failed: ' + (e.code || e.message); config.nextAt = Date.now() + 3600000; }
+        finally { try { privateWrite(scheduleFile, config); } finally { busy = false; } }
+    }
     function snapshot() {
         return { schema: 1, createdAt: Date.now(), owner: JSON.parse(fs.readFileSync(files.account, 'utf8')),
             staff: fs.existsSync(files.account + '.staff.json') ? JSON.parse(fs.readFileSync(files.account + '.staff.json', 'utf8')) : [],
@@ -102,6 +125,21 @@ function installWorkspaceBackup(app, { env, towns, instances, requireAdmin, requ
             finally { busy = false; }
         };
     }
+    app.get('/api/admin/backup/schedule', requireAdmin, (_req,res) => {
+        res.set('Cache-Control', 'no-store');
+        try { res.json({ success: true, schedule: publicSchedule(readSchedule()) }); }
+        catch { res.status(500).json({ message: 'Could not read backup schedule.' }); }
+    });
+    app.post('/api/admin/backup/schedule', requireAdmin, exclusive(async (req,res) => {
+        const { enabled, hours, retention, password } = req.body || {};
+        if (typeof enabled !== 'boolean' || !Number.isInteger(hours) || hours < 1 || hours > 168 || !Number.isInteger(retention) || retention < 1 || retention > 90) throw new Error('Choose 1–168 hours and 1–90 retained backups.');
+        const config = readSchedule();
+        if (enabled && !validPassword(password || config.password)) throw new Error('Supply a backup password of 12–256 characters.');
+        Object.assign(config, { enabled, hours, retention, nextAt: Date.now(), error: '' });
+        if (password) config.password = password;
+        privateWrite(scheduleFile, config);
+        res.json({ success: true, schedule: publicSchedule(config) });
+    }));
     app.post('/api/admin/backup/export', requireAdmin, exclusive(async (req, res) => {
         const current = snapshot();
         validate(current, towns, env);
@@ -110,13 +148,13 @@ function installWorkspaceBackup(app, { env, towns, instances, requireAdmin, requ
     app.get('/api/admin/backup/safety', requireAdmin, (_req, res) => {
         res.set('Cache-Control', 'no-store');
         const backups = fs.existsSync(files.directory) ? fs.readdirSync(files.directory)
-            .filter((name) => /^before-restore-\d+-[a-f0-9]{8}\.json$/.test(name)).sort().reverse()
-            .map((name) => ({ name, createdAt: Number(name.split('-')[2]) })) : [];
+            .filter((name) => /^(?:before-restore|scheduled)-\d+-[a-f0-9]{8}\.json$/.test(name)).sort().reverse()
+            .map((name) => ({ name, createdAt: Number(name.match(/-(\d+)-/)[1]) })) : [];
         res.json({ success: true, backups });
     });
     app.get('/api/admin/backup/safety/:name', requireAdmin, (req, res) => {
         res.set('Cache-Control', 'no-store');
-        if (!/^before-restore-\d+-[a-f0-9]{8}\.json$/.test(req.params.name)) return res.status(400).json({ message: 'Invalid safety backup name.' });
+        if (!/^(?:before-restore|scheduled)-\d+-[a-f0-9]{8}\.json$/.test(req.params.name)) return res.status(400).json({ message: 'Invalid safety backup name.' });
         const file = path.join(files.directory, req.params.name);
         if (!fs.existsSync(file)) return res.status(404).json({ message: 'Safety backup not found.' });
         res.json({ success: true, backup: JSON.parse(fs.readFileSync(file, 'utf8')) });
@@ -148,6 +186,8 @@ function installWorkspaceBackup(app, { env, towns, instances, requireAdmin, requ
         if (requestRestart) res.once('finish', requestRestart);
         res.json({ success: true, restarting: Boolean(requestRestart), safetyBackup: safetyName, message: requestRestart ? 'Restore scheduled. The backend will restart; sign in using an account from the backup.' : 'Restore staged. Restart the backend to apply it, then sign in using an account from the backup.' });
     }));
-    return { get restoring() { return restoring; } };
+    return { get restoring() { return restoring; }, scheduledBackup,
+        startJobs() { if (!scheduleTimer) { scheduleTimer = setInterval(() => scheduledBackup().catch(e => console.error('Scheduled backup:', e.message)), 60000); scheduleTimer.unref(); } },
+        stopJobs() { clearInterval(scheduleTimer); scheduleTimer = null; } };
 }
 module.exports = { installWorkspaceBackup, applyPendingRestore, encrypt, decrypt, validate };
