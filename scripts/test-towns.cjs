@@ -44,7 +44,8 @@ async function main() {
     }
     vm.runInNewContext(fs.readFileSync(sourceFile, 'utf8'), {
         require: mockRequire, module: moduleObject, __dirname: path.dirname(sourceFile), process, Buffer, console, URL,
-        setTimeout: (fn) => { timers.push(fn); return fn; }, setInterval: (fn) => { timers.push(fn); return fn; }, clearInterval() {},
+        setTimeout: (fn, ms) => { if (ms === 2000) return setTimeout(fn, ms); timers.push(fn); return fn; },
+        clearTimeout, setInterval: (fn) => { timers.push(fn); return fn; }, clearInterval() {},
         fetch: async (url, options) => {
             if (url.endsWith('/initialize')) {
                 const payment = JSON.parse(options.body);

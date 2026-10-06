@@ -31,6 +31,7 @@ function installBusinessOperations(app, deps) {
         if (v.suspended) return 'suspended';
         if (v.status === 'expired' || (v.expiresAt && v.expiresAt <= Date.now())) return 'expired';
         if (v.provisioning === 'pending') return 'pending';
+        if (!v.activatedAt && !v.expiresAt && (v.hasLoggedIn || Number(v.dataConsumedBytes) > 0)) return 'used';
         return v.activatedAt ? 'active' : 'awaiting';
     }
     function summary(v) {
@@ -105,7 +106,7 @@ function installBusinessOperations(app, deps) {
         const alerts = [];
         if (error) alerts.push({ kind: 'router', message: 'Router checks failed: ' + error });
         for (const v of data.vouchers) {
-            if (!v.activatedAt && Number(v.dataConsumedBytes) > 0) alerts.push({ kind: 'activation', username: v.username, message: 'Usage recorded without first-login time. Retained logs did not provide sufficient evidence.' });
+            if (!v.activatedAt && (v.hasLoggedIn || Number(v.dataConsumedBytes) > 0)) alerts.push({ kind: 'activation', username: v.username, message: 'Login confirmed, but first-login time is missing. Retained logs did not provide sufficient evidence to calculate expiry.' });
             if (v.expirySchedulePending) alerts.push({ kind: 'expiry', username: v.username, message: 'Router expiry update is pending.' });
             if (v.provisioning === 'pending') alerts.push({ kind: 'payment', username: v.username, message: 'Paid voucher is awaiting provisioning.' });
         }

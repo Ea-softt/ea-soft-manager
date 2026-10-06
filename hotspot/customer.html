@@ -23,7 +23,7 @@ function bind(id, output, work) {
 bind('balance','result',async(body,out)=>{
  const {customer:c}=await request('customer',body);
  document.querySelector('#balance input[type=password]').value='';
- out.textContent='Status: '+c.status+'\nRemaining data: '+(c.remainingBytes/1024**3).toFixed(2)+' GB\nExpiry: '+(c.expiresAt?new Date(c.expiresAt).toLocaleString():'Starts on first login')+'\nUsage last updated: '+(c.dataUsageUpdatedAt?new Date(c.dataUsageUpdatedAt).toLocaleString():'Not available');
+ out.textContent='Status: '+c.status+'\nRemaining data: '+(c.remainingBytes/1024**3).toFixed(2)+' GB\nExpiry: '+(c.expiresAt?new Date(c.expiresAt).toLocaleString():(c.status==='used'||c.activatedAt?'Expiry unavailable ? contact support':'Starts on first login'))+'\nUsage last updated: '+(c.dataUsageUpdatedAt?new Date(c.dataUsageUpdatedAt).toLocaleString():'Not available');
 });
 bind('recover','recovery',async(body,out)=>{out.textContent=(await request('recover-customer',body)).message;});
 let plans=[];

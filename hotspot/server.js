@@ -116,6 +116,7 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
     data.vouchers = data.vouchers.map((item) => {
         const current = latestVouchers.get(item.id);
         if (!current) return item;
+        if (current.hasLoggedIn) item.hasLoggedIn = true;
         if ((current.operationsRevision || 0) > (item.operationsRevision || 0)) {
             item = { ...item, operationsRevision: current.operationsRevision, suspended: current.suspended,
                 activatedAt: current.activatedAt, activationSource: current.activationSource, expiresAt: current.expiresAt,
@@ -298,8 +299,10 @@ async function paystackVerify(reference) {
     return data.data;
 }
 
-async function createMikroTikUser(username, password, profile, quotaBytes) {
+async function createMikroTikUser(username, password, profile, quotaBytes, requestId = null) {
     const api = new RouterOSAPI(getMikroTikApiOptions());
+    let connected = false;
+    const marker = requestId ? `EA-MANAGER-${requestId}` : null;
 
     const numericQuotaBytes = Number(quotaBytes);
 
@@ -309,6 +312,7 @@ async function createMikroTikUser(username, password, profile, quotaBytes) {
 
     try {
         await api.connect();
+        connected = true;
 
         const result = await api.write('/ip/hotspot/user/add', [
             `=name=${String(username).trim()}`,
@@ -319,7 +323,8 @@ async function createMikroTikUser(username, password, profile, quotaBytes) {
             // Do NOT use limit-uptime.
             // Calendar validity is controlled by the backend scheduler.
 
-            `=limit-bytes-total=${String(numericQuotaBytes)}`
+            `=limit-bytes-total=${String(numericQuotaBytes)}`,
+            ...(marker ? [`=comment=${marker}`] : [])
         ]);
 
         console.log(
@@ -332,6 +337,27 @@ async function createMikroTikUser(username, password, profile, quotaBytes) {
 
     } catch (error) {
         const message = error.message || String(error);
+        const timedOut = /time\s*out|timed\s*out|ETIMEDOUT|SOCKTMOUT/i.test(message + ' ' + (error.code || error.errno || ''));
+        if (connected && marker && (timedOut || /already|exists/i.test(message))) {
+            // The router may have committed the add before its reply was lost.
+            // Verify a unique request marker on a fresh connection; never blindly add again.
+            await api.close().catch(() => {});
+            const check = new RouterOSAPI(getMikroTikApiOptions());
+            try {
+                await check.connect();
+                const users = await check.write('/ip/hotspot/user/print', [`?name=${String(username).trim()}`]);
+                const matches = users.filter(user => user.name === String(username).trim() && user.comment === marker &&
+                    user.password === String(password).trim() && user.profile === String(profile).trim() &&
+                    Number(user['limit-bytes-total']) === numericQuotaBytes);
+                if (matches.length === 1) return matches;
+            } catch { /* Retain an uncertain outcome rather than issuing another add. */ }
+            finally { await check.close().catch(() => {}); }
+        }
+        if (timedOut) {
+            throw new Error(connected
+                ? `Router confirmation timed out for voucher ${String(username).trim()}. Creation could not be verified. Do not create a replacement until this username is checked on the router.`
+                : 'Could not connect or authenticate to the MikroTik API before the timeout. No voucher-add command was sent. Check the selected town router connection, VPN and API access.');
+        }
 
         if (/username or password is invalid/i.test(message)) {
             throw new Error(
@@ -654,7 +680,9 @@ async function readMikroTikHotspotUsers() {
 
     try {
         await api.connect();
-        return await api.write('/ip/hotspot/user/print');
+        return await api.write('/ip/hotspot/user/print', [
+            '=.proplist=.id,name,password,profile,disabled,comment,limit-bytes-total,uptime,bytes-in,bytes-out'
+        ]);
     } catch (error) {
         if (error?.errno === 'UNKNOWNREPLY' && /!empty/.test(error.message || '')) return [];
         throw error;
@@ -665,6 +693,12 @@ async function readMikroTikHotspotUsers() {
 
 function parseRouterOsDuration(value) {
     const text = String(value || '').trim();
+    const clock = text.match(/^(?:(\d+)w)?(?:(\d+)d)?(\d+):(\d{2}):(\d{2}(?:\.\d+)?)$/);
+    if (clock) {
+        if (Number(clock[4]) >= 60 || Number(clock[5]) >= 60) return 0;
+        return Math.floor(Number(clock[1] || 0) * 604800 + Number(clock[2] || 0) * 86400 +
+            Number(clock[3]) * 3600 + Number(clock[4]) * 60 + Number(clock[5]));
+    }
 
     if (!text) {
         return 0;
@@ -906,6 +940,44 @@ async function scheduleCalendarExpiration(username, expiresAt) {
 
 
 let calendarSyncRunning = false;
+let townRefreshRunning = null;
+
+// HTTP requests and the periodic job share one refresh per town. Slow router
+// expiry operations can continue after a state response without building a queue.
+function refreshTownState() {
+    if (townRefreshRunning) return townRefreshRunning;
+    townRefreshRunning = (async () => {
+        let warning = '';
+        try {
+            if (!sharedVouchers) {
+                const users = await readMikroTikHotspotUsers();
+                mergeMikroTikUsers(readManagerData(), users);
+            }
+        } catch (error) {
+            console.error('Town user refresh failed:', error.message);
+            warning = 'Router sync is unavailable. Showing saved records.';
+        }
+        try { await syncCalendarActivations(); }
+        catch (error) {
+            console.error('Town calendar refresh failed:', error.message);
+            warning = 'Router sync is unavailable. Showing saved records.';
+        }
+        return warning;
+    })().finally(() => { townRefreshRunning = null; });
+    return townRefreshRunning;
+}
+
+async function refreshTownStateForResponse() {
+    let deadline;
+    try {
+        return await Promise.race([
+            refreshTownState(),
+            new Promise((resolve) => {
+                deadline = setTimeout(() => resolve('Router sync is still running. Showing saved records.'), 2000);
+            })
+        ]);
+    } finally { clearTimeout(deadline); }
+}
 
 
 function activationDuration(voucher, plans) {
@@ -934,6 +1006,7 @@ async function performCalendarActivationSync() {
         for (const active of activeUsers) {
             const voucher = data.vouchers.find((item) => String(item.username).trim() === String(active.user || '').trim());
             if (!voucher) continue;
+            if (!voucher.hasLoggedIn) { voucher.hasLoggedIn = true; changed = true; }
             if (!voucher.activatedAt) {
                 voucher.activatedAt = observedAt - parseRouterOsDuration(active.uptime) * 1000;
                 voucher.activationSource = 'observed-session';
@@ -1020,12 +1093,17 @@ function mergeMikroTikUsers(data, mikrotikUsers) {
     for (const voucher of data.vouchers) {
         const routerUser = routerByName.get(voucher.username);
         if (!routerUser) continue;
+        if (!voucher.hasLoggedIn && parseRouterOsDuration(routerUser.uptime) > 0) {
+            voucher.hasLoggedIn = true;
+            changed = true;
+        }
         const counters = [routerUser['bytes-in'], routerUser['bytes-out']];
         // Missing counters are unknown, not zero. Keep the last valid reading.
         if (!counters.every((value) => /^\d+$/.test(String(value)))) continue;
         const [upload, download] = counters.map(Number);
         if (!Number.isSafeInteger(upload + download)) continue;
         voucher.dataConsumedBytes = upload + download;
+        if (upload + download > 0) voucher.hasLoggedIn = true;
         voucher.dataUsageUpdatedAt = observedAt;
         changed = true;
     }
@@ -1164,14 +1242,8 @@ app.get('/api/health', (req, res) => {
 // });
 
 app.get('/api/admin/state', requireAdminToken, async (req, res) => {
-    let warning = '';
-    try {
-        if (!sharedVouchers) {
-            const routerUsers = await readMikroTikHotspotUsers();
-            mergeMikroTikUsers(readManagerData(), routerUsers);
-        }
-    } catch { warning = 'Router sync is unavailable. Showing saved records.'; }
-    try { await syncCalendarActivations(); }
+    let warning;
+    try { warning = await refreshTownStateForResponse(); }
     catch { warning = 'Router sync is unavailable. Showing saved records.'; }
     try {
         const data = readManagerData();
@@ -1227,12 +1299,29 @@ app.put('/api/admin/plans', requireAdminToken, (req, res) => {
 app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
     let reservedUsername;
     try {
-        const { username, password, phone, planId, amount } = req.body || {};
+        const { username, password, phone, planId, amount, requestId } = req.body || {};
         const data = readManagerData();
         const plan = data.plans.find((item) => item.id === planId);
 
         if (!username || !password || !plan) {
             return res.status(400).json({ success: false, message: 'Username, password, and a valid plan are required.' });
+        }
+        if (requestId !== undefined && !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) {
+            return res.status(400).json({ success: false, message: 'Invalid voucher request ID.' });
+        }
+        const existingRequest = requestId && data.vouchers.find(v => v.managerRequestId === requestId);
+        if (existingRequest) {
+            if (existingRequest.username !== String(username).trim() || existingRequest.password !== String(password).trim() ||
+                existingRequest.planId !== planId || existingRequest.amount !== Number(amount ?? plan.price) || existingRequest.phone !== String(phone || '').trim()) {
+                return res.status(409).json({ success: false, message: 'This request ID belongs to a different voucher.' });
+            }
+            return res.json({ success: true, user: existingRequest, sales: data.sales });
+        }
+        if (data.vouchers.some(v => v.username === String(username).trim() && v.source !== 'mikrotik')) {
+            return res.status(409).json({ success: false, message: 'This voucher username is already recorded. Refresh the list.' });
+        }
+        if (initializingVoucherUsernames.has(String(username).trim())) {
+            return res.status(409).json({ success: false, message: 'This voucher username is already being created.' });
         }
 
         const profile = profileNameForPlan(plan);
@@ -1247,11 +1336,20 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
             if (initializingVoucherUsernames.has(name)) throw new Error('Voucher username is being created.');
             initializingVoucherUsernames.add(name);
             reservedUsername = name;
-        } else await createMikroTikUser(username, password, profile, quotaBytes);
+        } else {
+            reservedUsername = String(username).trim();
+            initializingVoucherUsernames.add(reservedUsername);
+            await createMikroTikUser(username, password, profile, quotaBytes, requestId);
+        }
         const now = Date.now();
+        // A periodic refresh may have imported the router account while its add reply was delayed.
+        data.vouchers = readManagerData().vouchers;
+        const imported = data.vouchers.find(v => v.username === String(username).trim() && v.source === 'mikrotik');
 
         const voucher = {
-        id: crypto.randomUUID(),
+        ...(imported || {}),
+        id: imported?.id || crypto.randomUUID(),
+        managerRequestId: requestId || null,
 
         username: String(username).trim(),
         password: String(password).trim(),
@@ -1269,16 +1367,17 @@ app.post('/api/admin/vouchers', requireAdminToken, async (req, res) => {
         createdAt: now,
 
         // Starts only after first successful login.
-        activatedAt: null,
-        expiresAt: null,
+        activatedAt: imported?.activatedAt || null,
+        expiresAt: imported?.expiresAt || null,
 
         status: 'active',
 
         source: 'manager'
         };
 
+        if (imported) data.vouchers = data.vouchers.filter(v => v.id !== imported.id);
         data.vouchers.unshift(voucher);
-        writeManagerData(data);
+        writeManagerData(data, voucher);
         return res.status(201).json({ success: true, user: voucher, sales: data.sales });
     } catch (error) {
         console.error(error);
@@ -1582,18 +1681,9 @@ app.post('/api/paystack/webhook', async (req, res) => {
     const timers = [];
     function startJobs() {
         if (timers.length) return;
-        let syncing = false;
         const sync = async () => {
-            if (syncing) return;
-            syncing = true;
-            try {
-                if (!sharedVouchers) {
-                    try { mergeMikroTikUsers(readManagerData(), await readMikroTikHotspotUsers()); }
-                    catch (error) { console.error('Town user refresh failed:', env.TOWN_ID || 'default', error.message); }
-                }
-                await syncCalendarActivations();
-            } catch (error) { console.error('Town usage/calendar sync failed:', env.TOWN_ID || 'default', error.message); }
-            finally { syncing = false; }
+            if (townRefreshRunning) return;
+            await refreshTownState();
         };
         timers.push(setTimeout(recoverPendingPayments, 1000), setInterval(recoverPendingPayments, 30000),
             setTimeout(sync, 5000), setInterval(sync, 10000));

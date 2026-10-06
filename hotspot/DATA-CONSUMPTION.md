@@ -1,5 +1,28 @@
 # Data consumption
 
+## Recent vouchers and customer rows
+
+The backend explicitly requests `bytes-in` and `bytes-out` in the RouterOS API
+property list, then saves their sum and the observation time. This follows the
+[RouterOS API property-list interface](https://help.mikrotik.com/docs/spaces/ROS/pages/47579160/API).
+Both Recent vouchers and Vouchers & users display the same reading. Valid
+numeric-string readings from older records are also supported. A verified zero
+shows `0 B`; missing or invalid data shows `Awaiting usage reading`, rather than
+inventing zero consumption. A failed or incomplete router response retains the
+last valid reading and its timestamp.
+
+Deploy the updated backend and frontend for this change. Check the selected
+town's Router health if a reading remains pending after synchronization.
+Validation: `node scripts/test-voucher-usage.cjs`.
+
+Nonzero router usage or cumulative uptime also records evidence that a voucher
+has logged in. Such vouchers are no longer shown as awaiting their first login
+when an exact activation timestamp is missing: they show **Used — expiry
+unavailable** and are excluded from the currently-valid total until validity
+is known. Existing expiry and suspension states retain precedence. Accumulated
+uptime is not treated as a calendar start time. Active-session uptime supports
+both RouterOS unit strings and `HH:MM:SS` notation when computing session start.
+
 The manager's **Data consumption** menu shows upload + download totals for today,
 this week, this month and this year, with daily (7 days), weekly (8 weeks),
 monthly (12 months) and yearly (5 years) breakdowns. The town selector supports

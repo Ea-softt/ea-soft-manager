@@ -34,6 +34,14 @@ These are on-server backups. Download them off-server regularly; losing the enti
 
 ## Deployment
 
+### Bulk creation timeouts
+
+Bulk requests now carry a unique request ID on both the manager record and the router user comment. If the router accepts a creation but its reply times out, the backend verifies the exact request marker, username, password, profile and quota using a fresh connection. It does not resend the add automatically. Failure before connection/authentication is reported separately, because no add command was sent.
+
+On an uncertain response, the open manager page retains the attempted credentials and request ID in memory. Retry only the remaining quantity using the same town, plan, amount and phone; the first retry reuses the unconfirmed voucher. Successful request replays return the existing record without adding another sale. Reloading or signing out clears that in-memory attempt: inspect the named router user before replacing it. A router account imported during a delayed reply is merged into the confirmed manager record rather than duplicated. Both the backend and frontend must be updated to use this behavior.
+
+A timeout still requires checking the selected town's Router health, backend-to-router VPN/routing, API availability and credentials. These safeguards do not restore an unreachable router and do not blindly increase the timeout. Validate changes with `node scripts/test-bulk-timeouts.cjs`.
+
 Run `scripts/update-hotspot-server.ps1` from local PowerShell. It builds an allowlisted release, uploads to a unique staging directory, backs up existing backend files privately, stops PM2 for installation, installs production dependencies and restarts. Failed installation triggers code rollback. `.env`, `data`, and scheduler settings are never overwritten by the release. This updates the backend only; publish the newly built `dist` separately through your existing frontend hosting workflow. Router `login.html` is a separate upload too.
 
 The release must include `business-operations.js`, `router-time.js`, `customer.html`, and `workspace-backup.js` alongside the existing backend modules. Do not upload only `server.js`. Check the Operations page and backup schedule after signing in again.

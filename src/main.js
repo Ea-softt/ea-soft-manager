@@ -93,6 +93,7 @@ let dataUsage = null;
 let editingPlan = null;
 let editingUser = null;
 let bulkCreating = false;
+const pendingBulkVouchers = new Map();
 let bulkDeleting = false;
 let terminalDraft = '';
 let terminalOutput = '';
@@ -107,6 +108,7 @@ function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings
 persist();
 
 function signOut() {
+  pendingBulkVouchers.clear();
   operationsData = null; operationsError = ''; operationsBusy = false; operationsQuery = ''; operationCustomer = '';
   backupSchedule = null; scheduleLoading = false; scheduleError = '';
   pendingOperation = null;
@@ -355,6 +357,7 @@ async function syncRemoteState() {
 }
 function money(value) { return `${state.settings.currency}${Number(value).toFixed(2)}`; }
 function formatDataUsage(bytes) {
+  if (typeof bytes === 'string' && /^\d+$/.test(bytes)) bytes = Number(bytes);
   if (!Number.isSafeInteger(bytes) || bytes < 0) return 'Unavailable';
   if (bytes === 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -362,11 +365,13 @@ function formatDataUsage(bytes) {
   return `${new Intl.NumberFormat('en-GH', { maximumFractionDigits: unit ? 2 : 0 }).format(bytes / 1024 ** unit)} ${units[unit]}`;
 }
 function dataUsageCell(user) {
-  const known = Number.isSafeInteger(user.dataConsumedBytes) && user.dataConsumedBytes >= 0;
+  const formatted = formatDataUsage(user.dataConsumedBytes);
+  const known = formatted !== 'Unavailable';
   const timestamp = Number(user.dataUsageUpdatedAt);
   const updated = known && Number.isFinite(timestamp) && timestamp > 0
     ? `<small>Read ${escapeText(formatDate(timestamp))}</small>` : '';
-  return `<td title="Upload + download reported by the router; counters may reset. Units use 1024 bytes per KB.">${formatDataUsage(user.dataConsumedBytes)}${updated}</td>`;
+  if (!known) return '<td title="No valid usage reading has reached the manager yet. Check this town’s Router health if this persists."><span>Awaiting usage reading</span><small>Updates after router sync</small></td>';
+  return `<td title="Upload + download reported by the router; counters may reset. Units use 1024 bytes per KB.">${formatted}${updated}</td>`;
 }
 function formatDate(value) {
   if (value == null || value === '') return 'Awaiting first login';
@@ -1000,13 +1005,14 @@ function renderOverview({ activeUsers, waitingUsers, revenue, expiring }) {
   const recent = [...state.users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
   const revenueByStatus = overviewRevenueByStatus();
   return `<div class="heading-row"><div><p class="eyebrow">CONTROL ROOM</p><h1>Good morning, EA-Soft.</h1><p class="subhead">A clear view of your hotspot business, vouchers, and plan performance.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div>
-    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers + waitingUsers}</strong><small class="voucher-count-breakdown"><span>${activeUsers} active</span><span>${waitingUsers} waiting for first login</span></small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small class="voucher-count-breakdown">${revenue === null ? "" : `<span>${money(revenueByStatus.active)} from active vouchers</span><span>${money(revenueByStatus.awaiting)} from waiting for first login</span>`}<span>All reported sales; cleared entries excluded</span></small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
+    <div class="stat-grid"><div class="stat-card mint"><span class="stat-icon">${icon('Wifi')}</span><p>Active vouchers</p><strong>${activeUsers + waitingUsers}</strong><small class="voucher-count-breakdown"><span>${activeUsers} active</span><span>${waitingUsers} waiting for first login</span>${state.users.some(u => voucherDisplayStatus(u) === 'used') ? `<span>${state.users.filter(u => voucherDisplayStatus(u) === 'used').length} used ? expiry unavailable (excluded)</span>` : ''}</small></div><div class="stat-card sun"><span class="stat-icon">${icon('Database')}</span><p>Total revenue</p><strong>${revenue === null ? 'Unavailable' : money(revenue)}</strong><small class="voucher-count-breakdown">${revenue === null ? "" : `<span>${money(revenueByStatus.active)} from active vouchers</span><span>${money(revenueByStatus.awaiting)} from waiting for first login</span>`}<span>All reported sales; cleared entries excluded</span></small></div><div class="stat-card sky"><span class="stat-icon">${icon('Clock3')}</span><p>Expiring soon</p><strong>${expiring}</strong><small>Within 24 hours</small></div><div class="stat-card coral"><span class="stat-icon">${icon('Users')}</span><p>All customers</p><strong>${state.users.length}</strong><small>Voucher records</small></div></div>
     <div class="content-grid"><section class="panel wide-panel"><div class="panel-head"><div><p class="eyebrow">LATEST ACTIVITY</p><h2>Recent vouchers</h2></div><button class="text-button" data-view="users">View all ${icon('ChevronDown')}</button></div>${userTable(recent)}</section><section class="panel"><div class="panel-head"><div><p class="eyebrow">YOUR CATALOG</p><h2>Plans</h2></div><button class="icon-button small" data-action="new-plan">${icon('Plus')}</button></div><div class="mini-plans">${state.plans.slice(0, 5).map(planMini).join('')}</div></section></div>`;
 }
 function voucherDisplayStatus(user) {
   if (user.suspended) return 'suspended';
   if (user.status === 'expired' || (user.expiresAt != null && user.expiresAt <= Date.now())) return 'expired';
   if (user.provisioning === 'pending') return 'pending';
+  if (!user.activatedAt && !user.expiresAt && (user.hasLoggedIn || Number(user.dataConsumedBytes) > 0)) return 'used';
   if (!user.activatedAt && !user.expiresAt) return 'awaiting';
   return 'active';
 }
@@ -1024,16 +1030,16 @@ function overviewRevenueByStatus() {
 }
 function voucherStatusBadge(user) {
   const status = voucherDisplayStatus(user);
-  const labels = { suspended: 'Suspended', active: 'Active', expired: 'Expired', awaiting: 'Awaiting first login', pending: 'Paid — activation pending' };
+  const labels = { used: 'Used — expiry unavailable', suspended: 'Suspended', active: 'Active', expired: 'Expired', awaiting: 'Awaiting first login', pending: 'Paid — activation pending' };
   return `<span class="pill ${status}">${labels[status]}</span>`;
 }
 function renderUsers() {
   const filtered = state.users.filter((user) => `${user.username} ${user.phone} ${getPlan(user.planId)?.name || ''}`.toLowerCase().includes(searchTerm.toLowerCase()) && (statusFilter === 'all' || voucherDisplayStatus(user) === statusFilter));
-  return `<div class="heading-row"><div><p class="eyebrow">CUSTOMER LEDGER</p><h1>Vouchers & users</h1><p class="subhead">Every credential, payment, limit, and expiry in one place.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div><div class="toolbar"><label class="search-box">${icon('Search')}<input id="user-search" value="${searchTerm}" placeholder="Search username, phone, or plan" /></label><select id="status-filter"><option value="all" ${statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="awaiting" ${statusFilter === 'awaiting' ? 'selected' : ''}>Awaiting first login</option><option value="active" ${statusFilter === 'active' ? 'selected' : ''}>Active</option><option value="expired" ${statusFilter === 'expired' ? 'selected' : ''}>Expired</option></select><button class="secondary-button" data-action="bulk-users">${icon('Plus')} Bulk vouchers</button><button class="secondary-button" data-action="bulk-delete" ${selectedVoucherIds.size && !bulkDeleting ? '' : 'disabled'}>${icon('Trash2')} ${bulkDeleting ? 'Deleting…' : 'Delete selected (' + selectedVoucherIds.size + ')'}</button><button class="secondary-button" data-action="export">${icon('Download')} Export</button></div><section class="panel table-panel">${userTable(filtered, true)}</section>`;
+  return `<div class="heading-row"><div><p class="eyebrow">CUSTOMER LEDGER</p><h1>Vouchers & users</h1><p class="subhead">Every credential, payment, limit, and expiry in one place.</p></div><button class="primary-button" data-action="new-user">${icon('Plus')} New voucher</button></div><div class="toolbar"><label class="search-box">${icon('Search')}<input id="user-search" value="${searchTerm}" placeholder="Search username, phone, or plan" /></label><select id="status-filter"><option value="all" ${statusFilter === 'all' ? 'selected' : ''}>All statuses</option><option value="awaiting" ${statusFilter === 'awaiting' ? 'selected' : ''}>Awaiting first login</option><option value="active" ${statusFilter === 'active' ? 'selected' : ''}>Active</option><option value="used" ${statusFilter === 'used' ? 'selected' : ''}>Used ? expiry unavailable</option><option value="expired" ${statusFilter === 'expired' ? 'selected' : ''}>Expired</option></select><button class="secondary-button" data-action="bulk-users">${icon('Plus')} Bulk vouchers</button><button class="secondary-button" data-action="bulk-delete" ${selectedVoucherIds.size && !bulkDeleting ? '' : 'disabled'}>${icon('Trash2')} ${bulkDeleting ? 'Deleting…' : 'Delete selected (' + selectedVoucherIds.size + ')'}</button><button class="secondary-button" data-action="export">${icon('Download')} Export</button></div><section class="panel table-panel">${userTable(filtered, true)}</section>`;
 }
 function userTable(users, full = false) {
   if (!users.length) return '<div class="empty-state">No voucher records match this view.</div>';
-  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Data consumed</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td>${dataUsageCell(user)}<td>${money(user.amount)}</td><td>${user.activatedAt && !user.expiresAt ? 'Active ? expiry unavailable' : formatDate(user.expiresAt)}</td><td>${voucherStatusBadge(user)}</td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Data consumed</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td>${dataUsageCell(user)}<td>${money(user.amount)}</td><td>${!user.expiresAt && (user.activatedAt || user.hasLoggedIn || Number(user.dataConsumedBytes) > 0) ? 'Expiry unavailable' : formatDate(user.expiresAt)}</td><td>${voucherStatusBadge(user)}</td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function planMini(plan) { return `<div class="mini-plan"><span class="plan-color ${plan.color}"></span><div><strong>${plan.name}</strong><small>${plan.dataLimit} GB · ${plan.duration} ${plan.period}</small></div><b>${money(plan.price)}</b></div>`; }
 function renderPlans() { return `<div class="heading-row"><div><p class="eyebrow">PRODUCT CATALOG</p><h1>Plans & pricing</h1><p class="subhead">Change price, data limit, and time limit without touching the hotspot portal.</p></div><button class="primary-button" data-action="new-plan">${icon('Plus')} Add plan</button></div><div class="plan-grid">${state.plans.map((plan) => `<article class="plan-card ${plan.color}"><div class="plan-card-top"><span class="plan-color"></span><div class="row-actions"><button class="icon-button small" data-action="edit-plan" data-id="${plan.id}" title="Edit plan">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-plan" data-id="${plan.id}" title="Delete plan">${icon('Trash2', 16)}</button></div></div><h2>${plan.name}</h2><p class="plan-price">${money(plan.price)}</p><div class="plan-meta"><span>${icon('Database', 15)} ${plan.dataLimit} GB</span><span>${icon('Clock3', 15)} ${plan.duration} ${plan.period}</span><span>Shared: ${plan.sharedUsers || 1}</span><span>${plan.rateLimit || 'No rate limit'}</span></div></article>`).join('')}</div>`; }
@@ -1232,6 +1238,11 @@ async function saveBulkUsers(event) {
   }
   const remote = hasRemoteApi();
   const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * Number(plan.duration);
+  const pendingVoucher = pendingBulkVouchers.get(selectedTown);
+  if (pendingVoucher && (pendingVoucher.planId !== plan.id || pendingVoucher.amount !== amount || pendingVoucher.phone !== String(data.phone || '').trim())) {
+    alert('Voucher ' + pendingVoucher.username + ' still needs confirmation. Retry with the same package, amount and phone before starting a different batch.');
+    return;
+  }
   if (!remote && (!Number.isFinite(durationMs) || durationMs <= 0)) {
     alert('This package needs a valid duration.');
     return;
@@ -1240,21 +1251,25 @@ async function saveBulkUsers(event) {
   form.querySelectorAll('input, select, button').forEach((control) => { control.disabled = true; });
   const created = [];
   let failure = '';
+  let attemptedUsername = '';
   try {
     for (let index = 0; index < quantity; index += 1) {
       form.querySelector('#bulk-progress').textContent = 'Creating voucher ' + (index + 1) + ' of ' + quantity + '…';
-      const credentials = { ...generateShortVoucherCredentials(), phone: String(data.phone || '').trim(), planId: plan.id, amount };
+      const credentials = pendingBulkVouchers.get(selectedTown) || { ...generateShortVoucherCredentials(), phone: String(data.phone || '').trim(), planId: plan.id, amount, requestId: crypto.randomUUID() };
+      attemptedUsername = credentials.username;
       let user;
       if (remote) {
+        pendingBulkVouchers.set(selectedTown, credentials);
         const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(credentials) });
         user = result.user;
+        pendingBulkVouchers.delete(selectedTown);
         if (Array.isArray(result.sales)) state.sales = result.sales;
       } else {
         const now = Date.now();
         user = { ...credentials, id: crypto.randomUUID(), dataLimit: plan.dataLimit, createdAt: now, expiresAt: now + durationMs, status: 'active' };
       }
       created.push(user);
-      state.users.unshift(user);
+      state.users = [user, ...state.users.filter(existing => existing.id !== user.id && existing.username !== user.username)];
       persist();
     }
   } catch (error) {
@@ -1269,7 +1284,7 @@ async function saveBulkUsers(event) {
     try { await downloadVoucherCsv(created, plan); }
     catch (error) { alert('Vouchers were created, but CSV sharing failed: ' + error.message); }
   }
-  alert(failure ? 'Created ' + created.length + ' of ' + quantity + ' vouchers. Stopped: ' + failure + ' Check the voucher list before creating the remainder.' : 'Created ' + created.length + ' vouchers for ' + plan.name + '.');
+  alert(failure ? 'Confirmed ' + created.length + ' of ' + quantity + ' vouchers. Stopped at username ' + attemptedUsername + ': ' + failure + ' Retry only the remaining ' + (quantity - created.length) + ' with the same package, amount and phone. This page keeps the unconfirmed voucher for a safe retry; do not reload until it is resolved.' : 'Created ' + created.length + ' vouchers for ' + plan.name + '.');
 }
 async function deleteVoucher(id) {
   if (!financeAvailable) { alert('Update the backend before deleting vouchers so their sales history is preserved.'); return; }

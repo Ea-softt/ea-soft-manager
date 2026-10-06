@@ -12,6 +12,7 @@ let fails = true;
 let calls = 0;
 let sessions = [{ user: 'online', uptime: '2h' }, { user: 'custom', uptime: '1h' }];
 const context = vm.createContext({
+  setTimeout, clearTimeout,
   sharedVouchers: null,
   crypto,
   console: { error() {} },
@@ -80,5 +81,48 @@ run(source.slice(source.indexOf('let calendarSyncRunning'), source.indexOf('func
   assert.match(response.warning, /Router sync is unavailable/);
   context.readMikroTikHotspotActiveUsers = async () => [];
   await run('syncCalendarActivations()');
-  console.log('Activation checks passed: expiry preservation, scheduling retries, first-refresh imports, concurrent sync, and router failure warnings.');
+
+  // An unresponsive router must not hold Android requests until Nginx times out.
+  // Multiple requests join the background work, including after their deadlines.
+  let routerReads = 0;
+  let failRouter;
+  context.readMikroTikHotspotUsers = () => {
+    routerReads++;
+    return new Promise((_resolve, reject) => { failRouter = reject; });
+  };
+  const pendingRefresh = run('refreshTownState()');
+  const started = Date.now();
+  const responses = await Promise.all(Array.from({ length: 3 }, async () => {
+    let body;
+    await stateHandler({}, { json: (result) => { body = result; } });
+    return body;
+  }));
+  assert.ok(Date.now() - started < 4000, 'saved records should return within the response deadline');
+  for (const body of responses) {
+    assert.equal(body.success, true);
+    assert.match(body.warning, /still running.*saved records/);
+    assert.ok(body.users.some((user) => user.id === 'paid'));
+  }
+  assert.equal(routerReads, 1);
+  assert.equal(run('refreshTownState()'), pendingRefresh);
+  failRouter(Error('Late router failure'));
+  assert.match(await pendingRefresh, /unavailable/);
+  context.readMikroTikHotspotUsers = async () => [];
+  await stateHandler({}, { json: (body) => { response = body; } });
+  assert.equal(response.warning, '');
+
+  // Slow expiry scheduling continues safely after the HTTP response.
+  let finishSchedule;
+  context.scheduleCalendarExpiration = () => new Promise((resolve) => { finishSchedule = resolve; });
+  const paidVoucher = data.vouchers.find((user) => user.id === 'paid');
+  paidVoucher.expirySchedulePending = true;
+  const expiryRefresh = run('refreshTownState()');
+  await stateHandler({}, { json: (body) => { response = body; } });
+  assert.match(response.warning, /still running/);
+  assert.equal(data.vouchers.find((user) => user.id === 'paid').expirySchedulePending, true);
+  finishSchedule();
+  await expiryRefresh;
+  assert.equal(data.vouchers.find((user) => user.id === 'paid').expirySchedulePending, false);
+  assert.equal(data.vouchers.find((user) => user.id === 'paid').expiresAt, firstExpiry);
+  console.log('Activation checks passed: expiry preservation, scheduling retries, imports, bounded state responses, coalesced refreshes, and late router recovery.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
