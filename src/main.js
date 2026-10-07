@@ -97,6 +97,7 @@ const pendingBulkVouchers = new Map();
 let bulkDeleting = false;
 let terminalDraft = '';
 let networkData = null;
+let networkOtherStatus = 'all';
 let networkError = '';
 let networkBusy = false;
 let terminalOutput = '';
@@ -111,6 +112,7 @@ function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings
 persist();
 
 function signOut() {
+  networkOtherStatus = 'all';
   networkData = null; networkError = ''; networkBusy = false;
   pendingBulkVouchers.clear();
   operationsData = null; operationsError = ''; operationsBusy = false; operationsQuery = ''; operationCustomer = '';
@@ -819,8 +821,10 @@ function renderNetwork() {
     <section class="panel"><h2>Manage stations</h2><p>Create your main station and substations here, then use Assign station / edit on each device to place it in a station.</p>${!stations.length ? '<p>No stations created yet. Your discovered devices are listed under Other.</p>' : ''}
     <form id="network-station-form" class="network-device-form"><input name="previousName" type="hidden" value="" /><label>Station name<input name="name" required maxlength="80" placeholder="Main station or Substation 1" /></label><label>Station type<select name="type"><option value="main">Main station</option><option value="substation">Substation</option></select></label><button id="network-station-save" class="primary-button" ${networkBusy ? 'disabled' : ''}>Create station</button><button id="network-station-cancel" type="button" class="secondary-button" hidden>Cancel edit</button></form></section>
     <div class="network-stations">${layout.map(([group, expected]) => {
-      const devices = (d?.devices || []).filter(device => device.group === group);
-      return `<section class="panel"><p class="eyebrow">${text(group.toUpperCase())}</p><p>${text(expected)}</p>${group !== 'Other' ? `<button class="text-button" data-network-station-edit="${text(group)}">Edit station</button>` : ''}${devices.length ? `<div class="table-scroll"><table><thead><tr><th>Device / IP</th><th>Status</th><th>Last seen</th></tr></thead><tbody>${devices.map(device => `<tr><td><strong>${text(device.name || device.detectedName || 'Unassigned device')}</strong><small>${text(device.ip)}${device.mac ? ` · ${text(device.mac)}` : ''}</small><button class="text-button" data-network-edit="${text(device.ip)}">Assign station / edit</button></td><td>${status(device.status)}${device.checkError ? `<small>${text(device.checkError)}</small>` : ''}<small>${device.checkedAt ? `Checked ${text(formatDate(device.checkedAt))}` : 'Not checked yet'}</small></td><td>${device.lastSeenAt ? text(formatDate(device.lastSeenAt)) : 'Not seen replying'}</td></tr>`).join('')}</tbody></table></div>` : '<p>No device IP assigned yet.</p>'}</section>`;
+      const groupDevices = (d?.devices || []).filter(device => device.group === group);
+      const devices = groupDevices.filter(device => group !== 'Other' || networkOtherStatus === 'all' || device.status === networkOtherStatus);
+      const statusFilter = group === 'Other' ? `<label>Status <select id="network-other-status">${[['all', 'All statuses'], ['online', 'Online'], ['no-reply', 'No reply'], ['unknown', 'Unknown']].map(([value, label]) => `<option value="${value}" ${networkOtherStatus === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><p>${devices.length} of ${groupDevices.length} unassigned devices</p>` : '';
+      return `<section class="panel"><p class="eyebrow">${text(group.toUpperCase())}</p><p>${text(expected)}</p>${statusFilter}${group !== 'Other' ? `<button class="text-button" data-network-station-edit="${text(group)}">Edit station</button>` : ''}${devices.length ? `<div class="table-scroll"><table><thead><tr><th>Device / IP</th><th>Status</th><th>Last seen</th></tr></thead><tbody>${devices.map(device => `<tr><td><strong>${text(device.name || device.detectedName || 'Unassigned device')}</strong><small>${text(device.ip)}${device.mac ? ` · ${text(device.mac)}` : ''}</small><button class="text-button" data-network-edit="${text(device.ip)}">Assign station / edit</button></td><td>${status(device.status)}${device.checkError ? `<small>${text(device.checkError)}</small>` : ''}<small>${device.checkedAt ? `Checked ${text(formatDate(device.checkedAt))}` : 'Not checked yet'}</small></td><td>${device.lastSeenAt ? text(formatDate(device.lastSeenAt)) : 'Not seen replying'}</td></tr>`).join('')}</tbody></table></div>` : group === 'Other' && groupDevices.length ? '<p>No unassigned devices match this status.</p>' : '<p>No device IP assigned yet.</p>'}</section>`;
     }).join('')}</div>
     <section class="panel"><h2>Add or label a device</h2><p>Enter the actual IP and model to place a device in its station. You can add an existing device that is currently unreachable. A new address appears automatically after discovery.</p>
     <form id="network-device-form" class="network-device-form"><label>Management IP<input name="ip" required placeholder="192.168.10.2" list="network-ips" /><datalist id="network-ips">${(d?.devices || []).map(device => `<option value="${text(device.ip)}">${text(device.name || device.detectedName || '')}</option>`).join('')}</datalist></label><label>Device name / model<input name="name" required maxlength="80" placeholder="CPE610" /></label><label>Station<select name="group">${layout.map(([group]) => `<option>${text(group)}</option>`).join('')}</select></label><button class="primary-button" ${networkBusy ? 'disabled' : ''}>Save device</button></form>
@@ -847,6 +851,11 @@ async function refreshNetwork(path = '/api/admin/network/scan', options = { meth
 
 function bindNetwork() {
   if (activeView !== 'network' || selectedTown === 'all') return;
+  document.querySelector('#network-other-status')?.addEventListener('change', event => {
+    networkOtherStatus = event.target.value;
+    render();
+    document.querySelector('#network-other-status')?.focus();
+  });
   document.querySelector('#network-refresh')?.addEventListener('click', () => refreshNetwork());
   document.querySelector('#network-internet-check')?.addEventListener('click', () => refreshNetwork('/api/admin/network/internet'));
   const stationForm = document.querySelector('#network-station-form');
@@ -1298,6 +1307,7 @@ async function switchTown(id) {
   if (id === selectedTown || pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan) return;
   if (id !== 'all' && !towns.some((town) => town.id === id)) return;
   selectedTown = id;
+  networkOtherStatus = 'all';
   networkData = null; networkError = ''; networkBusy = false;
   operationsData = null; operationsError = ''; operationsQuery = ''; operationCustomer = '';
   hasLoadedState = false;
