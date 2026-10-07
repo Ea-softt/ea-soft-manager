@@ -259,7 +259,7 @@ async function apiRequest(pathname, options = {}) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
   }
-  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|network(?:\/scan|\/device|\/internet)?|reconcile-payment|report-history|operations(?:\?.*)?)$/;
+  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|network(?:\/scan|\/device|\/internet|\/stations)?|reconcile-payment|report-history|operations(?:\?.*)?)$/;
   if (townRoutes.test(pathname)) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
@@ -810,17 +810,20 @@ function renderNetwork() {
   const text = value => escapeText(String(value ?? 'Unknown'));
   const status = value => `<span class="network-status ${value === 'online' ? 'online' : value === 'no-reply' ? 'no-reply' : ''}">${value === 'online' ? '🟢 ONLINE' : value === 'no-reply' ? '🔴 NO REPLY' : '⚪ UNKNOWN'}</span>`;
   const rate = value => value == null ? 'Unavailable' : `${Number(value).toFixed(1)} Mbps`;
-  const layout = { Main: 'CPE610 · EAP110', 'Substation 1': 'CPE510 · EAP110 · CPE210 TX', 'Substation 2': 'CPE210 RX · EAP110 · CPE210 TX', 'Substation 3': 'CPE210 RX · EAP110', Other: 'Newly discovered and unassigned devices' };
+  const stations = d?.stations || [];
+  const layout = [...stations.map(station => [station.name, station.type === 'main' ? 'Main station' : 'Substation']), ['Other', 'Newly discovered and unassigned devices']];
   return `<div class="heading-row"><div><p class="eyebrow">MANAGEMENT VLAN · 192.168.10.0/24</p><h1>EA-SOFT WIFI NETWORK</h1><p>All 254 host addresses are checked through your MikroTik. Previously discovered devices remain visible.</p></div><button id="network-refresh" class="secondary-button" ${networkBusy || d?.scanning ? 'disabled' : ''}>${d?.scanning ? `Scanning ${d.progress}/254…` : 'Refresh network'}</button></div>
     ${networkError || d?.error ? `<p class="panel" role="alert">${text(networkError || d.error)}</p>` : ''}
     <p role="status">${d?.checkedAt ? `Last finished check: ${text(formatDate(d.checkedAt))}.` : 'No finished check yet.'} ${d?.scanning ? 'A scan is running; previous results stay visible until each device is checked again.' : 'A new scan starts one minute after the previous check finishes while this page is open.'} ${d?.checkedAt && Date.now() - d.checkedAt > 120000 ? 'Readings are stale.' : ''}</p>
     <section class="panel network-summary"><div>Internet ${status(d?.health.internet)}<small>${text(d?.health.internetMessage || 'Internet has not been checked yet.')}</small>${d?.health.internetCheckedAt ? `<small>Checked ${text(formatDate(d.health.internetCheckedAt))}</small>` : ''}<button id="network-internet-check" class="secondary-button" ${networkBusy || d?.health.internetChecking ? 'disabled' : ''}>Check Internet</button></div><div>MikroTik ${status(d?.health.router)}</div><div>Download <strong>${rate(d?.health.downloadMbps)}</strong></div><div>Upload <strong>${rate(d?.health.uploadMbps)}</strong></div><div>Hotspot active users <strong>${text(d?.health.activeUsers)}</strong></div></section>
-    <div class="network-stations">${Object.entries(layout).map(([group, expected]) => {
+    <section class="panel"><h2>Manage stations</h2><p>Create your main station and substations here, then use Assign station / edit on each device to place it in a station.</p>${!stations.length ? '<p>No stations created yet. Your discovered devices are listed under Other.</p>' : ''}
+    <form id="network-station-form" class="network-device-form"><input name="previousName" type="hidden" value="" /><label>Station name<input name="name" required maxlength="80" placeholder="Main station or Substation 1" /></label><label>Station type<select name="type"><option value="main">Main station</option><option value="substation">Substation</option></select></label><button id="network-station-save" class="primary-button" ${networkBusy ? 'disabled' : ''}>Create station</button><button id="network-station-cancel" type="button" class="secondary-button" hidden>Cancel edit</button></form></section>
+    <div class="network-stations">${layout.map(([group, expected]) => {
       const devices = (d?.devices || []).filter(device => device.group === group);
-      return `<section class="panel"><p class="eyebrow">${text(group.toUpperCase())}</p><p>${text(expected)}</p>${devices.length ? `<div class="table-scroll"><table><thead><tr><th>Device / IP</th><th>Status</th><th>Last seen</th></tr></thead><tbody>${devices.map(device => `<tr><td><strong>${text(device.name || device.detectedName || 'Unassigned device')}</strong><small>${text(device.ip)}${device.mac ? ` · ${text(device.mac)}` : ''}</small><button class="text-button" data-network-edit="${text(device.ip)}">Assign station / edit</button></td><td>${status(device.status)}${device.checkError ? `<small>${text(device.checkError)}</small>` : ''}<small>${device.checkedAt ? `Checked ${text(formatDate(device.checkedAt))}` : 'Not checked yet'}</small></td><td>${device.lastSeenAt ? text(formatDate(device.lastSeenAt)) : 'Not seen replying'}</td></tr>`).join('')}</tbody></table></div>` : '<p>No device IP assigned yet.</p>'}</section>`;
+      return `<section class="panel"><p class="eyebrow">${text(group.toUpperCase())}</p><p>${text(expected)}</p>${group !== 'Other' ? `<button class="text-button" data-network-station-edit="${text(group)}">Edit station</button>` : ''}${devices.length ? `<div class="table-scroll"><table><thead><tr><th>Device / IP</th><th>Status</th><th>Last seen</th></tr></thead><tbody>${devices.map(device => `<tr><td><strong>${text(device.name || device.detectedName || 'Unassigned device')}</strong><small>${text(device.ip)}${device.mac ? ` · ${text(device.mac)}` : ''}</small><button class="text-button" data-network-edit="${text(device.ip)}">Assign station / edit</button></td><td>${status(device.status)}${device.checkError ? `<small>${text(device.checkError)}</small>` : ''}<small>${device.checkedAt ? `Checked ${text(formatDate(device.checkedAt))}` : 'Not checked yet'}</small></td><td>${device.lastSeenAt ? text(formatDate(device.lastSeenAt)) : 'Not seen replying'}</td></tr>`).join('')}</tbody></table></div>` : '<p>No device IP assigned yet.</p>'}</section>`;
     }).join('')}</div>
     <section class="panel"><h2>Add or label a device</h2><p>Enter the actual IP and model to place a device in its station. You can add an existing device that is currently unreachable. A new address appears automatically after discovery.</p>
-    <form id="network-device-form" class="network-device-form"><label>Management IP<input name="ip" required placeholder="192.168.10.2" list="network-ips" /><datalist id="network-ips">${(d?.devices || []).map(device => `<option value="${text(device.ip)}">${text(device.name || device.detectedName || '')}</option>`).join('')}</datalist></label><label>Device name / model<input name="name" required maxlength="80" placeholder="CPE610" /></label><label>Station<select name="group">${Object.keys(layout).map(group => `<option>${text(group)}</option>`).join('')}</select></label><button class="primary-button" ${networkBusy ? 'disabled' : ''}>Save device</button></form>
+    <form id="network-device-form" class="network-device-form"><label>Management IP<input name="ip" required placeholder="192.168.10.2" list="network-ips" /><datalist id="network-ips">${(d?.devices || []).map(device => `<option value="${text(device.ip)}">${text(device.name || device.detectedName || '')}</option>`).join('')}</datalist></label><label>Device name / model<input name="name" required maxlength="80" placeholder="CPE610" /></label><label>Station<select name="group">${layout.map(([group]) => `<option>${text(group)}</option>`).join('')}</select></label><button class="primary-button" ${networkBusy ? 'disabled' : ''}>Save device</button></form>
     <p>No reply means the device did not answer ICMP; it may be offline or block ping. Internet status checks 1.1.1.1 and 8.8.8.8 from the router. Traffic is measured on ${text(d?.health.wan || 'the configured WAN interface')}. Devices are tracked by IP; update labels when addresses are reassigned.</p></section>`;
 }
 
@@ -846,6 +849,30 @@ function bindNetwork() {
   if (activeView !== 'network' || selectedTown === 'all') return;
   document.querySelector('#network-refresh')?.addEventListener('click', () => refreshNetwork());
   document.querySelector('#network-internet-check')?.addEventListener('click', () => refreshNetwork('/api/admin/network/internet'));
+  const stationForm = document.querySelector('#network-station-form');
+  stationForm?.addEventListener('submit', event => {
+    event.preventDefault();
+    const previousName = stationForm.elements.previousName.value;
+    void refreshNetwork('/api/admin/network/stations', { method: previousName ? 'PUT' : 'POST', body: JSON.stringify({
+      previousName, name: stationForm.elements.name.value.trim(), type: stationForm.elements.type.value
+    }) });
+  });
+  document.querySelector('#network-station-cancel')?.addEventListener('click', () => {
+    stationForm.reset();
+    document.querySelector('#network-station-save').textContent = 'Create station';
+    document.querySelector('#network-station-cancel').hidden = true;
+  });
+  document.querySelectorAll('[data-network-station-edit]').forEach(button => button.addEventListener('click', () => {
+    const station = networkData?.stations.find(s => s.name === button.dataset.networkStationEdit);
+    if (!station || !stationForm) return;
+    stationForm.elements.previousName.value = station.name;
+    stationForm.elements.name.value = station.name;
+    stationForm.elements.type.value = station.type;
+    document.querySelector('#network-station-save').textContent = 'Save station';
+    document.querySelector('#network-station-cancel').hidden = false;
+    stationForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    stationForm.elements.name.focus();
+  }));
   document.querySelectorAll('[data-network-edit]').forEach(button => button.addEventListener('click', () => {
     const device = networkData?.devices.find(d => d.ip === button.dataset.networkEdit);
     const form = document.querySelector('#network-device-form');

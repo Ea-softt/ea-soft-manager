@@ -6,10 +6,21 @@ neighbor discovery provide available MAC addresses and names. Static and DHCP
 addresses are supported. New responding addresses appear under Other. Previously
 discovered devices stay in the inventory when they stop replying.
 
-Use **Add or label a device** to assign the actual management IP to Main or
-Substations 1–3 and name it CPE610, CPE510, CPE210 TX/RX, EAP110, or another model.
-The expected models shown beside each station are a guide; the monitor cannot
-infer their IPs or station from the example layout. Add unreachable old devices
+Managers create their own stations using **Manage stations**: enter a name,
+select **Main station** or **Substation**, and click **Create station**. Stations
+are saved per town on the backend and remain after restarting or signing in on
+another client. There are no fixed station names or model placeholders. Up to
+50 stations can be created per town. **Edit station** changes its name or type
+and keeps all assigned devices in that station. Station creation, editing and
+device assignment require the existing Manager/admin access; agents cannot use
+these endpoints.
+
+Use **Assign station / edit** beside a discovered device to fill the device form,
+choose the station, and click **Save device**. **Add or label a device** also lets
+you enter the actual management IP and model (CPE610, CPE510, CPE210 TX/RX,
+EAP110, or another device). The monitor cannot infer the physical station from
+its IP or model. **Other** remains reserved for unassigned devices.
+Add unreachable old devices
 manually if they have never been discovered. Unused IPs are scanned but do not
 create inventory entries. Devices outside this /24 are outside the scan.
 
@@ -55,6 +66,10 @@ optional `NETWORK_INVENTORY_FILE` overrides its path and must be unique per town
 This inventory is separate from dashboard voucher JSON exports. Tracking is by
 IP address: relabel devices after address reassignment. Restarting retains the
 inventory but resets reachability to Unknown until the next check.
+Existing array-format inventory files migrate automatically: previously
+assigned station names and all devices are retained. The new file contains
+`schema`, `stations`, and `devices`; empty old placeholder stations are not
+created during migration. Create the stations you need through the Manager.
 
 RouterOS references: [Ping](https://help.mikrotik.com/docs/spaces/ROS/pages/8323183/Ping)
 and [interface traffic](https://help.mikrotik.com/docs/spaces/ROS/pages/139526175/Interface%20stats%20and%20monitor-traffic).

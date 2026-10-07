@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const groups = ['Main', 'Substation 1', 'Substation 2', 'Substation 3', 'Other'];
+const validStationName = name => typeof name === 'string' && name.trim().length > 0 && name.trim().length <= 80 && name.trim().toLowerCase() !== 'other';
 const validIp = ip => typeof ip === 'string' && /^192\.168\.10\.(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-4])$/.test(ip);
 const replies = rows => rows.some(row => (row.time && !row.status) || Number(row.received) > 0);
 const permissionError = error => /not enough permissions|permission denied|not permitted|not allowed/i.test(error?.message || '');
@@ -17,10 +17,18 @@ function routeInterface(row) {
 function installNetworkMonitor(app, requireAdmin, { router, env = {}, now = Date.now }) {
     const file = env.NETWORK_INVENTORY_FILE || path.join(path.dirname(env.DATA_FILE || path.join(__dirname, 'data', 'manager.json')), path.basename(env.DATA_FILE || 'manager.json', '.json') + '-network.json');
     let devices = [];
+    let stations = [];
     if (fs.existsSync(file)) {
         const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (!Array.isArray(saved) || saved.some(d => !validIp(d.ip))) throw new Error('Invalid network inventory file.');
-        devices = saved.map(d => ({ ...d, status: 'unknown' }));
+        const inventory = Array.isArray(saved) ? saved : saved?.devices;
+        if (!Array.isArray(inventory) || inventory.some(d => !validIp(d.ip))) throw new Error('Invalid network inventory file.');
+        if (Array.isArray(saved)) {
+            stations = [...new Set(inventory.map(d => d.group).filter(group => group && group !== 'Other'))]
+                .map(name => ({ name, type: name === 'Main' ? 'main' : 'substation' }));
+        } else stations = saved.stations;
+        if (!Array.isArray(stations) || stations.length > 50 || stations.some(s => !validStationName(s.name) || !['main', 'substation'].includes(s.type)) ||
+            new Set(stations.map(s => s.name.toLowerCase())).size !== stations.length) throw new Error('Invalid network stations.');
+        devices = inventory.map(d => ({ ...d, group: stations.some(s => s.name === d.group) ? d.group : 'Other', status: 'unknown' }));
     }
     let scanning = false, startedAt = null, checkedAt = null, error = '', progress = 0;
     let health = { router: 'unknown', internet: 'unknown', activeUsers: null, downloadMbps: null, uploadMbps: null, wan: null };
@@ -58,11 +66,11 @@ function installNetworkMonitor(app, requireAdmin, { router, env = {}, now = Date
     }
     function save() {
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file + '.tmp', JSON.stringify(devices, null, 2), { mode: 0o600 });
+        fs.writeFileSync(file + '.tmp', JSON.stringify({ schema: 1, stations, devices }, null, 2), { mode: 0o600 });
         fs.renameSync(file + '.tmp', file);
     }
     function snapshot() {
-        return { subnet: '192.168.10.0/24', scanning, startedAt, checkedAt, progress, error, health,
+        return { subnet: '192.168.10.0/24', scanning, startedAt, checkedAt, progress, error, health, stations,
             devices: [...devices].sort((a, b) => Number(a.ip.split('.').at(-1)) - Number(b.ip.split('.').at(-1))) };
     }
     async function scan() {
@@ -170,9 +178,26 @@ function installNetworkMonitor(app, requireAdmin, { router, env = {}, now = Date
         if (!scanning && (!startedAt || now() - Math.max(startedAt, checkedAt || 0) >= 60000)) void scan();
         respond(res);
     });
+    function saveStation(req, res) {
+        const { name, type, previousName } = req.body || {};
+        if (!validStationName(name) || !['main', 'substation'].includes(type)) return res.status(400).json({ message: 'Enter a station name of 1–80 characters and select Main station or Substation. Other is reserved for unassigned devices.' });
+        const station = req.method === 'PUT' ? stations.find(s => s.name === previousName) : null;
+        if (req.method === 'PUT' && !station) return res.status(404).json({ message: 'Station not found. Refresh the network monitor.' });
+        if (stations.some(s => s !== station && s.name.toLowerCase() === name.trim().toLowerCase())) return res.status(409).json({ message: 'A station with this name already exists.' });
+        if (!station && stations.length >= 50) return res.status(400).json({ message: 'You can create up to 50 stations per town.' });
+        const before = JSON.stringify({ stations, devices });
+        if (station) {
+            devices.forEach(d => { if (d.group === station.name) d.group = name.trim(); });
+            Object.assign(station, { name: name.trim(), type });
+        } else stations.push({ name: name.trim(), type });
+        try { save(); respond(res); }
+        catch { ({ stations, devices } = JSON.parse(before)); res.status(500).json({ message: 'Could not save the station. Check inventory storage permissions.' }); }
+    }
+    app.post('/api/admin/network/stations', requireAdmin, saveStation);
+    app.put('/api/admin/network/stations', requireAdmin, saveStation);
     app.put('/api/admin/network/device', requireAdmin, (req, res) => {
         const { ip, name, group } = req.body || {};
-        if (!validIp(ip) || typeof name !== 'string' || !name.trim() || name.length > 80 || !groups.includes(group)) {
+        if (!validIp(ip) || typeof name !== 'string' || !name.trim() || name.length > 80 || (group !== 'Other' && !stations.some(s => s.name === group))) {
             return res.status(400).json({ message: 'Enter an IP from 192.168.10.1–254, a device name (up to 80 characters), and a station.' });
         }
         const before = JSON.stringify(devices);
