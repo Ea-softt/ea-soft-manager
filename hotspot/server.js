@@ -169,6 +169,12 @@ async function operationRouter(command, args = []) {
     try { await api.connect(); return await api.write(command, args); }
     finally { await api.close().catch(() => {}); }
 }
+try {
+    require('./network-monitor').installNetworkMonitor(app, requireAdminToken, { router: operationRouter, env });
+} catch (error) {
+    console.error('Network monitor unavailable:', error.message);
+    app.use('/api/admin/network', requireAdminToken, (_req, res) => res.status(503).json({ message: 'Network monitor unavailable. Deploy network-monitor.js and check the inventory file on the server.' }));
+}
 const businessOperations = require('./business-operations').installBusinessOperations(app, {
     requireAdmin: requireAdminToken, read: readManagerData, save: saveManagerData,
     router: operationRouter, shared: sharedVouchers, duration: activationDuration,

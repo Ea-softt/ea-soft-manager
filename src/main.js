@@ -96,6 +96,9 @@ let bulkCreating = false;
 const pendingBulkVouchers = new Map();
 let bulkDeleting = false;
 let terminalDraft = '';
+let networkData = null;
+let networkError = '';
+let networkBusy = false;
 let terminalOutput = '';
 let terminalBusy = false;
 let operationsData = null, operationsError = '', operationsBusy = false, operationsQuery = '', operationCustomer = '';
@@ -108,6 +111,7 @@ function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings
 persist();
 
 function signOut() {
+  networkData = null; networkError = ''; networkBusy = false;
   pendingBulkVouchers.clear();
   operationsData = null; operationsError = ''; operationsBusy = false; operationsQuery = ''; operationCustomer = '';
   backupSchedule = null; scheduleLoading = false; scheduleError = '';
@@ -255,7 +259,7 @@ async function apiRequest(pathname, options = {}) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
   }
-  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|reconcile-payment|report-history|operations(?:\?.*)?)$/;
+  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|network(?:\/scan|\/device|\/internet)?|reconcile-payment|report-history|operations(?:\?.*)?)$/;
   if (townRoutes.test(pathname)) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
@@ -300,7 +304,7 @@ async function performApiRequest(pathname, options = {}) {
     error.status = 401;
     throw error;
   }
-  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload the complete server update, including business-operations.js, router-time.js, customer.html, workspace-backup.js, server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
+  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload the complete server update, including business-operations.js, router-time.js, customer.html, workspace-backup.js, server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, network-monitor.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
   if (!response.ok || data.success === false) throw new Error(data.message || `API request failed (${response.status})`);
   return data;
 }
@@ -415,6 +419,7 @@ function render() {
           ${navItem('consumption', 'Database', 'Data consumption')}
           ${navItem('operations', 'Search', 'Business operations')}
           ${navItem('terminal', 'Terminal', 'Terminal')}
+          ${navItem('network', 'Wifi', 'Network monitor')}
           ${navItem('settings', 'Settings', 'Settings')}
           ${navItem('backup', 'Download', 'Backup & restore')}
         </nav>
@@ -422,7 +427,7 @@ function render() {
       </aside>
       <main class="main-content">
         <header class="topbar"><label class="town-picker">Town<select id="town-select" ${pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan ? 'disabled' : ''}><option value="all" ${selectedTown === 'all' ? 'selected' : ''}>All towns</option>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' || activeView === 'backup' ? renderView({ activeUsers, waitingUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' || activeView === 'network' || activeView === 'backup' ? renderView({ activeUsers, waitingUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
@@ -799,6 +804,70 @@ function bindOperations() {
   if (!operationsData && !operationsError && !operationsBusy) loadOperations();
 }
 
+function renderNetwork() {
+  if (selectedTown === 'all') return '<section class="panel"><h1>EA-SOFT WIFI NETWORK</h1><p>Select a town to monitor its management VLAN.</p></section>';
+  const d = networkData;
+  const text = value => escapeText(String(value ?? 'Unknown'));
+  const status = value => `<span class="network-status ${value === 'online' ? 'online' : value === 'no-reply' ? 'no-reply' : ''}">${value === 'online' ? '🟢 ONLINE' : value === 'no-reply' ? '🔴 NO REPLY' : '⚪ UNKNOWN'}</span>`;
+  const rate = value => value == null ? 'Unavailable' : `${Number(value).toFixed(1)} Mbps`;
+  const layout = { Main: 'CPE610 · EAP110', 'Substation 1': 'CPE510 · EAP110 · CPE210 TX', 'Substation 2': 'CPE210 RX · EAP110 · CPE210 TX', 'Substation 3': 'CPE210 RX · EAP110', Other: 'Newly discovered and unassigned devices' };
+  return `<div class="heading-row"><div><p class="eyebrow">MANAGEMENT VLAN · 192.168.10.0/24</p><h1>EA-SOFT WIFI NETWORK</h1><p>All 254 host addresses are checked through your MikroTik. Previously discovered devices remain visible.</p></div><button id="network-refresh" class="secondary-button" ${networkBusy || d?.scanning ? 'disabled' : ''}>${d?.scanning ? `Scanning ${d.progress}/254…` : 'Refresh network'}</button></div>
+    ${networkError || d?.error ? `<p class="panel" role="alert">${text(networkError || d.error)}</p>` : ''}
+    <p role="status">${d?.checkedAt ? `Last finished check: ${text(formatDate(d.checkedAt))}.` : 'No finished check yet.'} ${d?.scanning ? 'A scan is running; previous results stay visible until each device is checked again.' : 'A new scan starts one minute after the previous check finishes while this page is open.'} ${d?.checkedAt && Date.now() - d.checkedAt > 120000 ? 'Readings are stale.' : ''}</p>
+    <section class="panel network-summary"><div>Internet ${status(d?.health.internet)}<small>${text(d?.health.internetMessage || 'Internet has not been checked yet.')}</small>${d?.health.internetCheckedAt ? `<small>Checked ${text(formatDate(d.health.internetCheckedAt))}</small>` : ''}<button id="network-internet-check" class="secondary-button" ${networkBusy || d?.health.internetChecking ? 'disabled' : ''}>Check Internet</button></div><div>MikroTik ${status(d?.health.router)}</div><div>Download <strong>${rate(d?.health.downloadMbps)}</strong></div><div>Upload <strong>${rate(d?.health.uploadMbps)}</strong></div><div>Hotspot active users <strong>${text(d?.health.activeUsers)}</strong></div></section>
+    <div class="network-stations">${Object.entries(layout).map(([group, expected]) => {
+      const devices = (d?.devices || []).filter(device => device.group === group);
+      return `<section class="panel"><p class="eyebrow">${text(group.toUpperCase())}</p><p>${text(expected)}</p>${devices.length ? `<div class="table-scroll"><table><thead><tr><th>Device / IP</th><th>Status</th><th>Last seen</th></tr></thead><tbody>${devices.map(device => `<tr><td><strong>${text(device.name || device.detectedName || 'Unassigned device')}</strong><small>${text(device.ip)}${device.mac ? ` · ${text(device.mac)}` : ''}</small><button class="text-button" data-network-edit="${text(device.ip)}">Assign station / edit</button></td><td>${status(device.status)}${device.checkError ? `<small>${text(device.checkError)}</small>` : ''}<small>${device.checkedAt ? `Checked ${text(formatDate(device.checkedAt))}` : 'Not checked yet'}</small></td><td>${device.lastSeenAt ? text(formatDate(device.lastSeenAt)) : 'Not seen replying'}</td></tr>`).join('')}</tbody></table></div>` : '<p>No device IP assigned yet.</p>'}</section>`;
+    }).join('')}</div>
+    <section class="panel"><h2>Add or label a device</h2><p>Enter the actual IP and model to place a device in its station. You can add an existing device that is currently unreachable. A new address appears automatically after discovery.</p>
+    <form id="network-device-form" class="network-device-form"><label>Management IP<input name="ip" required placeholder="192.168.10.2" list="network-ips" /><datalist id="network-ips">${(d?.devices || []).map(device => `<option value="${text(device.ip)}">${text(device.name || device.detectedName || '')}</option>`).join('')}</datalist></label><label>Device name / model<input name="name" required maxlength="80" placeholder="CPE610" /></label><label>Station<select name="group">${Object.keys(layout).map(group => `<option>${text(group)}</option>`).join('')}</select></label><button class="primary-button" ${networkBusy ? 'disabled' : ''}>Save device</button></form>
+    <p>No reply means the device did not answer ICMP; it may be offline or block ping. Internet status checks 1.1.1.1 and 8.8.8.8 from the router. Traffic is measured on ${text(d?.health.wan || 'the configured WAN interface')}. Devices are tracked by IP; update labels when addresses are reassigned.</p></section>`;
+}
+
+async function refreshNetwork(path = '/api/admin/network/scan', options = { method: 'POST' }) {
+  if (!authenticated || selectedTown === 'all' || networkBusy) return;
+  const generation = authGeneration, town = selectedTown;
+  networkBusy = true;
+  try {
+    const result = await apiRequest(path, options);
+    if (generation !== authGeneration || town !== selectedTown) return;
+    networkData = result; networkError = '';
+  } catch (error) {
+    if (generation === authGeneration && town === selectedTown) networkError = error.message;
+  } finally {
+    if (generation === authGeneration && town === selectedTown) {
+      networkBusy = false;
+      if (authenticated && activeView === 'network') render();
+    }
+  }
+}
+
+function bindNetwork() {
+  if (activeView !== 'network' || selectedTown === 'all') return;
+  document.querySelector('#network-refresh')?.addEventListener('click', () => refreshNetwork());
+  document.querySelector('#network-internet-check')?.addEventListener('click', () => refreshNetwork('/api/admin/network/internet'));
+  document.querySelectorAll('[data-network-edit]').forEach(button => button.addEventListener('click', () => {
+    const device = networkData?.devices.find(d => d.ip === button.dataset.networkEdit);
+    const form = document.querySelector('#network-device-form');
+    if (!device || !form) return;
+    form.elements.ip.value = device.ip;
+    form.elements.name.value = device.name || device.detectedName || '';
+    form.elements.group.value = device.group || 'Other';
+    form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    form.elements.name.focus();
+  }));
+  document.querySelector('#network-device-form')?.addEventListener('submit', event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    void refreshNetwork('/api/admin/network/device', { method: 'PUT', body: JSON.stringify({ ip: form.elements.ip.value.trim(), name: form.elements.name.value.trim(), group: form.elements.group.value }) });
+  });
+  if (!networkData && !networkError) void refreshNetwork();
+}
+
+setInterval(() => {
+  if (authenticated && activeView === 'network' && !document.hidden && !document.activeElement?.matches('input, select, textarea')) void refreshNetwork();
+}, 5000);
+
 function renderTerminal() {
   return `<div class="heading-row"><div><p class="eyebrow">ROUTER MANAGEMENT</p><h1>MikroTik Terminal</h1></div></div>
     <section class="panel terminal-panel"><p>Run one complete RouterOS command at a time. Paste commands separately; do not join them with spaces or commas. Each run starts at the root menu. Interactive prompts are not supported; use a count or duration for continuous commands.</p>
@@ -868,6 +937,7 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (activeView === 'network') return renderNetwork();
   if (activeView === 'operations') return selectedTown === 'all' ? '<section class="panel"><h1>Business operations</h1><p>Select a town to troubleshoot customers, review payments and manage expenses.</p></section>' : renderOperations();
   if (activeView === 'backup') return renderBackup();
   if (activeView === 'agents') return renderAgentManagement();
@@ -1153,7 +1223,7 @@ function renderModal() {
   const plan = editingPlan;
   return `<div class="modal-backdrop"><form class="modal" id="plan-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">PLAN EDITOR</p><h2>${plan.id ? 'Edit plan' : 'Add plan'}</h2><label>Plan name<input name="name" value="${plan.name || ''}" required /></label><div class="form-row"><label>Price<input name="price" type="number" min="0" step="0.01" value="${plan.price || ''}" required /></label><label>Data limit (GB)<input name="dataLimit" type="number" min="0" step="0.1" value="${plan.dataLimit || ''}" required /></label></div><div class="form-row"><label>Time limit<input name="duration" type="number" min="1" value="${plan.duration || 1}" required /></label><label>Unit<select name="period"><option value="hours" ${plan.period === 'hours' ? 'selected' : ''}>Hours</option><option value="days" ${plan.period === 'days' ? 'selected' : ''}>Days</option><option value="weeks" ${plan.period === 'weeks' ? 'selected' : ''}>Weeks</option><option value="months" ${plan.period === 'months' ? 'selected' : ''}>Months</option></select></label></div><div class="form-row"><label>Shared users<input name="sharedUsers" type="number" min="1" step="1" value="${plan.sharedUsers || 1}" required /></label><label>Rate limit<input name="rateLimit" value="${plan.rateLimit || ''}" placeholder="e.g. 5M/5M" /></label></div><button class="primary-button full-button" type="submit">${icon('Save')} Save plan</button></form></div>`;
 }
-function bindEvents() { document.querySelector('#town-select')?.addEventListener('change', (event) => { const id = event.target.value; event.target.value = selectedTown; switchTown(id); }); document.querySelectorAll('[data-town]').forEach((el) => el.onclick = () => switchTown(el.dataset.town)); bindTerminal(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
+function bindEvents() { document.querySelector('#town-select')?.addEventListener('change', (event) => { const id = event.target.value; event.target.value = selectedTown; switchTown(id); }); document.querySelectorAll('[data-town]').forEach((el) => el.onclick = () => switchTown(el.dataset.town)); bindTerminal(); bindNetwork(); const accountForm = document.querySelector('#account-form'); if (accountForm) { accountForm.elements.email.value = accountEmail; accountForm.addEventListener('submit', saveAccount); document.querySelector('#currency-input').value = state.settings.currency; } document.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => { if (bulkCreating || bulkDeleting) return; activeView = el.dataset.view; render(); }); document.querySelectorAll('[data-action]').forEach((el) => el.onclick = () => handleAction(el.dataset.action, el.dataset.id)); document.querySelector('#user-search')?.addEventListener('input', (e) => { searchTerm = e.target.value; render(); document.querySelector('#user-search')?.focus(); }); document.querySelector('#status-filter')?.addEventListener('change', (e) => { statusFilter = e.target.value; render(); }); document.querySelector('#plan-form')?.addEventListener('submit', savePlan); document.querySelector('#user-form')?.addEventListener('submit', saveUser); document.querySelector('#bulk-user-form')?.addEventListener('submit', saveBulkUsers); bindVoucherSelection(); }
 async function handleAction(action, id) { if (!authenticated) return; if (selectedTown === 'all' && !['sign-out', 'sync', 'finance-range', 'usage-range', 'save-settings', 'disable-fingerprint', 'export', 'import'].includes(action)) { alert('Select a town first.'); return; } if (action === 'disable-fingerprint') { try { await BiometricLogin.clear(); alert('Fingerprint sign-in disabled on this phone.'); } catch (error) { alert(error.message); } return; } if (action === 'recover-payment') { const reference = document.querySelector('#payment-reference').value.trim(); if (!reference) return; try { await apiRequest('/api/admin/reconcile-payment', { method: 'POST', body: JSON.stringify({ reference }) }); await syncRemoteState(); alert('Payment verified and recorded.'); } catch (error) { alert(error.message); } render(); return; } if (action === 'sign-out') { if (!bulkCreating && !bulkDeleting) signOut(); return; } if (bulkCreating || bulkDeleting) return; if (action === 'bulk-delete') { await deleteSelectedVouchers(); return; } if (action === 'bulk-users') editingUser = { bulk: true }; if (action === 'new-plan') editingPlan = { name: '', price: 0, dataLimit: 1, duration: 1, period: 'days', sharedUsers: 1, rateLimit: '', color: 'mint' }; if (action === 'edit-plan') editingPlan = { ...getPlan(id) }; if (action === 'new-user') editingUser = { username: `EA-${Math.floor(100000 + Math.random() * 900000)}`, password: Math.random().toString(36).slice(2, 8).toUpperCase(), planId: state.plans[0]?.id, amount: state.plans[0]?.price || 0 }; if (action === 'edit-user') editingUser = { ...state.users.find((user) => user.id === id) }; if (action === 'close-modal') { editingPlan = null; editingUser = null; } if (action === 'delete-plan' && confirm('Delete this plan?')) { const plans = state.plans.filter((plan) => plan.id !== id); if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans }) }); state.plans = plans; persist(); } if (action === 'delete-user') { await deleteVoucher(id); return; } if (action === 'usage-range') usageRange = id; if (action === 'finance-range') financeRange = id; if (action === 'export') await exportBackup(); if (action === 'import') importBackup(); if (action === 'save-settings') await saveSettings(); if (action === 'sync') { try { await syncRemoteState(); alert('Backend connected and data synchronized.'); } catch (error) { alert(error.message); } } render(); }
 async function savePlan(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const plan = { ...editingPlan, ...data, price: Number(data.price), dataLimit: Number(data.dataLimit), duration: Number(data.duration), sharedUsers: Number(data.sharedUsers), rateLimit: data.rateLimit.trim(), id: editingPlan.id || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), color: editingPlan.color || 'mint' }; state.plans = editingPlan.id ? state.plans.map((item) => item.id === editingPlan.id ? plan : item) : [...state.plans, plan]; if (hasRemoteApi()) await apiRequest('/api/admin/plans', { method: 'PUT', body: JSON.stringify({ plans: state.plans }) }); editingPlan = null; persist(); render(); }
 async function saveUser(event) { event.preventDefault(); const data = Object.fromEntries(new FormData(event.target)); const existing = editingUser.id && state.users.find((user) => user.id === editingUser.id); if (existing) { const update = { phone: data.phone.trim(), amount: Number(data.amount) }; if (hasRemoteApi()) { const result = await apiRequest(`/api/admin/vouchers/${existing.id}`, { method: 'PUT', body: JSON.stringify(update) }); Object.assign(existing, result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else Object.assign(existing, update); } else { const plan = getPlan(data.planId); if (hasRemoteApi()) { const result = await apiRequest('/api/admin/vouchers', { method: 'POST', body: JSON.stringify(data) }); state.users.unshift(result.user); if (Array.isArray(result.sales)) state.sales = result.sales; } else { const durationMs = { hours: 3600000, days: 86400000, weeks: 604800000, months: 2592000000 }[plan.period] * plan.duration; state.users.unshift({ id: crypto.randomUUID(), username: data.username.trim(), password: data.password.trim(), phone: data.phone.trim(), planId: plan.id, amount: Number(data.amount), dataLimit: plan.dataLimit, createdAt: Date.now(), expiresAt: Date.now() + durationMs, status: 'active' }); } } editingUser = null; persist(); activeView = 'users'; render(); }
@@ -1201,6 +1271,7 @@ async function switchTown(id) {
   if (id === selectedTown || pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan) return;
   if (id !== 'all' && !towns.some((town) => town.id === id)) return;
   selectedTown = id;
+  networkData = null; networkError = ''; networkBusy = false;
   operationsData = null; operationsError = ''; operationsQuery = ''; operationCustomer = '';
   hasLoadedState = false;
   financeAvailable = false;

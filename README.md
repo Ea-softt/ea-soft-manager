@@ -116,6 +116,14 @@ The app requires backend authentication before accessing the dashboard. Sessions
 
 ## Online connection
 
+### Network monitor
+
+The **Network monitor** tab discovers static and DHCP devices on the
+`192.168.10.0/24` management VLAN, retains previous devices, and groups assigned
+IPs into Main and Substations 1–3. It shows Internet/router reachability,
+WAN download/upload rates, and active hotspot sessions. Deploy the updated
+backend with `network-monitor.js`; see [setup and limitations](hotspot/NETWORK-MONITOR.md).
+
 ### MikroTik Terminal
 
 The Manager **Terminal** tab runs single-line RouterOS commands over SSH through

@@ -9,7 +9,7 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stage = Join-Path $project "artifacts/business-release-$stamp"
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $files = @('server.js', 'towns.js', 'admin-auth.js', 'shared-vouchers.js', 'terminal.js',
-    'workspace-backup.js', 'business-operations.js', 'router-time.js', 'customer.html',
+    'workspace-backup.js', 'business-operations.js', 'router-time.js', 'network-monitor.js', 'NETWORK-MONITOR.md', 'customer.html',
     'agent-portal.js', 'gmail-email.js', 'package.json', 'package-lock.json', 'BUSINESS-OPERATIONS.md')
 foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path "$project/hotspot" $file) -Destination (Join-Path $stage $file)
@@ -38,6 +38,7 @@ tar -xzf release.tar.gz
 sha256sum -c SHA256SUMS
 node --check server.js
 node --check business-operations.js
+node --check network-monitor.js
 test -f "$backend/.env"
 test -f "$backend/package.json"
 pm2 describe ea-soft-api >/dev/null
@@ -69,15 +70,16 @@ require('dotenv').config({override:true});
 (async () => {
   for (let attempt=0; attempt<15; attempt++) {
     try {
-      const response=await fetch('http://127.0.0.1:'+(process.env.PORT || 3000)+'/api/towns/default/admin/operations', {signal:AbortSignal.timeout(2000)});
-      if(response.status===401) { console.log('Operations route is installed and requires authentication.'); return; }
+      const base='http://127.0.0.1:'+(process.env.PORT || 3000)+'/api/towns/default/admin/';
+      const responses=await Promise.all(['operations','network'].map(route=>fetch(base+route, {signal:AbortSignal.timeout(2000)})));
+      if(responses.every(response=>response.status===401)) { console.log('Operations and network monitor routes are installed and require authentication.'); return; }
     } catch {}
     await new Promise(resolve=>setTimeout(resolve,1000));
   }
-  throw Error('Operations endpoint did not become ready.');
+  throw Error('Operations or network monitor endpoint did not become ready.');
 })().catch(error=>{console.error(error.message);process.exitCode=1;});
 NODE
-echo 'Backend installed. Sign in again and open Business operations.'
+echo 'Backend installed. Sign in again and open Network monitor.'
 echo "Previous code saved in $stage/before. Configuration and customer records were not replaced."
 trap - EXIT
 '@

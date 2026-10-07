@@ -30,9 +30,10 @@ function loadTowns(env, config = readTownConfig(env)) {
         if (town.id !== 'default') {
             // Never inherit the first router's credentials for another town.
             for (const key of Object.keys(townEnv)) if (key.startsWith('MIKROTIK_')) delete townEnv[key];
+            delete townEnv.NETWORK_INVENTORY_FILE;
             if (!town.router || !town.router.MIKROTIK_HOST || !town.router.MIKROTIK_USERNAME || !town.router.MIKROTIK_PASSWORD) throw new Error(`Configure router host, username, and password for town ${town.id}.`);
             for (const [key, value] of Object.entries(town.router)) {
-                if (!/^MIKROTIK_(HOST|PORT|USERNAME|PASSWORD|REQUEST_TIMEOUT_MS|SSH_PORT|SSH_USERNAME|SSH_PASSWORD|SSH_HOST_SHA256)$/.test(key) || typeof value !== 'string') throw new Error(`Invalid router setting for town ${town.id}. Use string values.`);
+                if (!/^(MIKROTIK_(HOST|PORT|USERNAME|PASSWORD|REQUEST_TIMEOUT_MS|SSH_PORT|SSH_USERNAME|SSH_PASSWORD|SSH_HOST_SHA256)|NETWORK_(WAN_INTERFACE|INVENTORY_FILE))$/.test(key) || typeof value !== 'string') throw new Error(`Invalid router setting for town ${town.id}. Use string values.`);
                 townEnv[key] = value;
             }
         } else if (town.router) throw new Error('The default town uses the existing .env router settings.');
