@@ -1,5 +1,10 @@
 .modal-backdrop { overflow-y: auto; }
 .terminal-panel { display: grid; gap: 16px; min-width: 0; }
+.troubleshooting-editor { display: grid; gap: 12px; }
+.troubleshooting-editor textarea { width: 100%; min-width: 0; resize: vertical; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: 14px/1.6 Consolas, monospace; text-align: left; }
+.troubleshooting-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; margin-top: 20px; }
+.troubleshooting-checks pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 Consolas, monospace; }
+.troubleshooting-checks p, .troubleshooting-editor p { font: 14px/1.6 Arial, sans-serif; color: var(--muted); }
 .voucher-count-breakdown { display: grid; gap: 4px; margin-top: 8px; }
 .operation-events { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; font: 13px/1.5 Consolas, monospace; }
 [data-operation-form] { display: grid; gap: 12px; max-width: 560px; margin: 16px 0; }

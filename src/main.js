@@ -1,6 +1,7 @@
 import { createIcons, LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } from 'lucide';
 import './style.css';
 import './mobile.css';
+import { renderTroubleshootingNotes, bindTroubleshootingNotes } from './troubleshooting-notes';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 
 const FileExport = registerPlugin('FileExport');
@@ -421,6 +422,7 @@ function render() {
           ${navItem('consumption', 'Database', 'Data consumption')}
           ${navItem('operations', 'Search', 'Business operations')}
           ${navItem('terminal', 'Terminal', 'Terminal')}
+          ${navItem('notes', 'Pencil', 'Troubleshooting notes')}
           ${navItem('network', 'Wifi', 'Network monitor')}
           ${navItem('settings', 'Settings', 'Settings')}
           ${navItem('backup', 'Download', 'Backup & restore')}
@@ -429,12 +431,20 @@ function render() {
       </aside>
       <main class="main-content">
         <header class="topbar"><label class="town-picker">Town<select id="town-select" ${pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan ? 'disabled' : ''}><option value="all" ${selectedTown === 'all' ? 'selected' : ''}>All towns</option>${(towns.length ? towns : [{ id: 'default', name: 'Main town' }]).map((town) => `<option value="${escapeText(town.id)}" ${selectedTown === town.id ? 'selected' : ''}>${escapeText(town.name)}</option>`).join('')}</select></label><div class="mobile-brand">EA-Soft <span>Manager</span></div><div class="top-actions"><button class="icon-button" data-action="export" title="Export backup">${icon('Download')}</button><button class="secondary-button" data-action="sign-out">Sign out</button></div></header>
-        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'settings' || activeView === 'terminal' || activeView === 'network' || activeView === 'backup' ? renderView({ activeUsers, waitingUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
+        <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'notes' || activeView === 'settings' || activeView === 'terminal' || activeView === 'network' || activeView === 'backup' ? renderView({ activeUsers, waitingUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
     ${renderModal()}`;
   createIcons({ icons: { LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } });
   bindEvents();
+  bindTroubleshootingNotes({ workspace: state.settings.apiUrl, account: accountEmail, openTerminal(command) {
+    if (selectedTown === 'all') { alert('Select a town first to open its router Terminal.'); return; }
+    if (terminalBusy) { alert('Wait for the current terminal command to finish.'); return; }
+    terminalDraft = command;
+    activeView = 'terminal';
+    render();
+    document.querySelector('#terminal-command')?.focus();
+  } });
   bindTownSettings();
   bindAgentManagement();
   bindReportHistory();
@@ -973,6 +983,7 @@ async function runTerminalCommand(event) {
 }
 function navItem(view, iconName, label) { return `<button class="nav-item ${activeView === view ? 'active' : ''}" data-view="${view}">${icon(iconName)}<span>${label}</span></button>`; }
 function renderView(stats) {
+  if (activeView === 'notes') return renderTroubleshootingNotes({ workspace: state.settings.apiUrl, account: accountEmail, escapeText });
   if (activeView === 'network') return renderNetwork();
   if (activeView === 'operations') return selectedTown === 'all' ? '<section class="panel"><h1>Business operations</h1><p>Select a town to troubleshoot customers, review payments and manage expenses.</p></section>' : renderOperations();
   if (activeView === 'backup') return renderBackup();
@@ -1461,11 +1472,11 @@ async function refreshVoucherStatus() {
   statusRefreshRunning = true;
   try {
     if (hasRemoteApi()) await syncRemoteState();
-    if (!editingUser && !editingPlan && activeView !== 'settings' && activeView !== 'terminal' && activeView !== 'backup' && !document.activeElement?.matches('input, select, textarea')) render();
+    if (!editingUser && !editingPlan && activeView !== 'settings' && activeView !== 'notes' && activeView !== 'terminal' && activeView !== 'backup' && !document.activeElement?.matches('input, select, textarea')) render();
   } catch (error) {
     syncError = error.message;
     console.error('Voucher status refresh failed:', error.message);
-    if (authenticated && !editingUser && !editingPlan && activeView !== 'terminal' && activeView !== 'backup') render();
+    if (authenticated && !editingUser && !editingPlan && activeView !== 'notes' && activeView !== 'terminal' && activeView !== 'backup') render();
   } finally {
     statusRefreshRunning = false;
   }
