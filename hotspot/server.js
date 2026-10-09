@@ -117,6 +117,7 @@ function writeManagerData(data, correctedVoucher = null, deletedIds = [], update
         const current = latestVouchers.get(item.id);
         if (!current) return item;
         if (current.hasLoggedIn) item.hasLoggedIn = true;
+        if (current.connectionDevices) item.connectionDevices = current.connectionDevices;
         if ((current.operationsRevision || 0) > (item.operationsRevision || 0)) {
             item = { ...item, operationsRevision: current.operationsRevision, suspended: current.suspended,
                 activatedAt: current.activatedAt, activationSource: current.activationSource, expiresAt: current.expiresAt,
@@ -181,6 +182,12 @@ const businessOperations = require('./business-operations').installBusinessOpera
     schedule: scheduleCalendarExpiration, fulfill: (...args) => fulfillPayment(...args), sms: sendVoucherSms
 });
 app.get('/api/public/customer-portal', (_req, res) => res.sendFile(path.join(__dirname, 'customer.html')));
+try {
+    require('./customer-details').installCustomerDetails(app, { requireAdmin: requireAdminToken, read: readManagerData, save: saveManagerData, router: operationRouter });
+} catch (error) {
+    console.error('Customer details unavailable:', error.message);
+    app.get('/api/admin/vouchers/:id/details', requireAdminToken, (_req, res) => res.status(503).json({ message: 'Deploy customer-details.js and restart the backend to view connection details.' }));
+}
 app.post('/api/admin/report-history', requireAdminToken, (req, res) => {
     const { kind, action, from, to, requestId } = req.body || {};
     if (!['finance', 'usage'].includes(kind) || !['delete', 'restore'].includes(action) ||

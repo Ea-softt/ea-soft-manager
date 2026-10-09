@@ -23,6 +23,9 @@ try {
   run('writeManagerData(data); var stale = readManagerData(); data.vouchers[0].dataConsumedBytes = 10700; data.vouchers[0].dataUsageUpdatedAt = start + 3; writeManagerData(data); writeManagerData(stale);');
   assert.equal(run('readManagerData().dataUsage.days[0].bytes'), 700);
   assert.equal(run('readManagerData().vouchers[0].dataConsumedBytes'), 10700);
+  // A router snapshot taken before a manager edit cannot remove saved device details.
+  run('var deviceEdit = readManagerData(); deviceEdit.vouchers[0].connectionDevices = [{macAddress:"AABBCCDDEE01",deviceType:"Android phone",deviceModel:"Galaxy A15",accessPoint:"Market AP"}]; saveManagerData(deviceEdit); writeManagerData(stale);');
+  assert.equal(run('readManagerData().vouchers[0].connectionDevices[0].deviceType'), 'Android phone');
   // A reset counts only newly observed bytes, preserving historical totals.
   run('data = readManagerData(); data.vouchers[0].dataConsumedBytes = 50; data.vouchers[0].dataUsageUpdatedAt = start + 4; writeManagerData(data);');
   assert.equal(run('readManagerData().dataUsage.days[0].bytes'), 750);

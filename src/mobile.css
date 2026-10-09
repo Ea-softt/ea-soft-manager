@@ -1,5 +1,20 @@
 .modal-backdrop { overflow-y: auto; }
 .terminal-panel { display: grid; gap: 16px; min-width: 0; }
+.network-alarm { margin-bottom: 20px; }
+.network-alarm-triggered { border: 2px solid #b93826; background: #fff0e9; }
+.network-alarm-triggered h2, .network-alarm-triggered [role="alert"] { color: #a12619; }
+.network-alarm p, .network-alarm li { font: 14px/1.6 Arial, sans-serif; }
+.customer-details { width: min(100%, 820px); max-height: 90vh; overflow-y: auto; }
+.customer-details-link { font-weight: 700; text-align: left; }
+.customer-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 16px; margin: 0; }
+.customer-detail-grid dt { font: 12px Arial, sans-serif; color: var(--muted); }
+.customer-detail-grid dd { margin: 5px 0 0; font: 14px/1.5 Arial, sans-serif; overflow-wrap: anywhere; }
+.customer-session { border-top: 1px solid var(--line); padding-top: 12px; }
+.customer-device-form { display: grid; gap: 12px; padding: 16px 0; border-top: 1px solid var(--line); }
+.customer-device-form label { display: grid; gap: 6px; }
+.customer-device-form input, .customer-device-form select { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
+.customer-ap-catalog > dl { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.customer-details p { font: 14px/1.6 Arial, sans-serif; color: var(--muted); }
 .troubleshooting-editor { display: grid; gap: 12px; }
 .troubleshooting-editor textarea { width: 100%; min-width: 0; resize: vertical; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font: 14px/1.6 Consolas, monospace; text-align: left; }
 .troubleshooting-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; margin-top: 20px; }

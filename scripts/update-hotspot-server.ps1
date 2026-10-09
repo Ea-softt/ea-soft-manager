@@ -9,7 +9,7 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stage = Join-Path $project "artifacts/business-release-$stamp"
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $files = @('server.js', 'towns.js', 'admin-auth.js', 'shared-vouchers.js', 'terminal.js',
-    'workspace-backup.js', 'business-operations.js', 'router-time.js', 'network-monitor.js', 'NETWORK-MONITOR.md', 'customer.html',
+    'workspace-backup.js', 'business-operations.js', 'customer-details.js', 'router-time.js', 'network-monitor.js', 'NETWORK-MONITOR.md', 'customer.html',
     'agent-portal.js', 'gmail-email.js', 'package.json', 'package-lock.json', 'BUSINESS-OPERATIONS.md')
 foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path "$project/hotspot" $file) -Destination (Join-Path $stage $file)

@@ -146,7 +146,9 @@ async function main() {
     assert.equal((await internetResponse.json()).health.internet, 'online');
     assert.equal(pingCount - callsBefore, 2, 'manual Internet check does not run a subnet scan');
     const source = fs.readFileSync(path.join(__dirname, '../src/main.js'), 'utf8');
+    const alarmModule = await import('../src/network-alarm.js');
     const context = vm.createContext({
+      createNetworkAlarm: alarmModule.createNetworkAlarm, renderNetworkAlarm: alarmModule.renderNetworkAlarm,
       crypto: require('node:crypto').webcrypto, URL, console, setInterval() {}, setTimeout() {},
       window: { location: { protocol: 'https:', host: 'example.test', hostname: 'example.test' } },
       document: { hidden: false, querySelector: selector => selector === '#app' ? {} : selector === '#admin-login-form' ? { elements: { email: {} }, addEventListener() {} } : selector === '#login-mode' ? {} : null, querySelectorAll: () => [], addEventListener() {} },

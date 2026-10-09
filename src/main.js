@@ -1,6 +1,8 @@
 import { createIcons, LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } from 'lucide';
 import './style.css';
 import './mobile.css';
+import { createNetworkAlarm, renderNetworkAlarm } from './network-alarm';
+import { renderCustomerDetails } from './customer-details';
 import { renderTroubleshootingNotes, bindTroubleshootingNotes } from './troubleshooting-notes';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 
@@ -93,11 +95,13 @@ let usageRange = 'daily';
 let dataUsage = null;
 let editingPlan = null;
 let editingUser = null;
+let customerDetails = null;
 let bulkCreating = false;
 const pendingBulkVouchers = new Map();
 let bulkDeleting = false;
 let terminalDraft = '';
 let networkData = null;
+let networkAlarm = null;
 let networkOtherStatus = 'all';
 let networkError = '';
 let networkBusy = false;
@@ -113,6 +117,8 @@ function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings
 persist();
 
 function signOut() {
+  networkAlarm?.dispose(); networkAlarm = null;
+  customerDetails = null;
   networkOtherStatus = 'all';
   networkData = null; networkError = ''; networkBusy = false;
   pendingBulkVouchers.clear();
@@ -262,7 +268,7 @@ async function apiRequest(pathname, options = {}) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
   }
-  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+)?|terminal|network(?:\/scan|\/device|\/internet|\/stations)?|reconcile-payment|report-history|operations(?:\?.*)?)$/;
+  const townRoutes = /^\/api\/admin\/(state|plans|vouchers(?:\/[^/]+(?:\/details)?)?|terminal|network(?:\/scan|\/device|\/internet|\/stations)?|reconcile-payment|report-history|operations(?:\?.*)?)$/;
   if (townRoutes.test(pathname)) {
     if (selectedTown === 'all') throw new Error('Select a town first.');
     pathname = pathname.replace('/api/', `/api/towns/${encodeURIComponent(selectedTown)}/`);
@@ -307,7 +313,7 @@ async function performApiRequest(pathname, options = {}) {
     error.status = 401;
     throw error;
   }
-  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload the complete server update, including business-operations.js, router-time.js, customer.html, workspace-backup.js, server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, network-monitor.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
+  if (response.status === 404) throw new Error(data.message || `The backend at ${endpoint.origin} is missing ${endpoint.pathname}. Upload the complete server update, including business-operations.js, customer-details.js, router-time.js, customer.html, workspace-backup.js, server.js, towns.js, shared-vouchers.js, admin-auth.js, terminal.js, network-monitor.js, package.json, and package-lock.json to the backend folder, keep its .env and data, run npm ci, then restart the backend.`);
   if (!response.ok || data.success === false) throw new Error(data.message || `API request failed (${response.status})`);
   return data;
 }
@@ -399,6 +405,7 @@ function icon(name, size = 18) {
 }
 
 function render() {
+  if (!authenticated || activeView !== 'network' || selectedTown === 'all') networkAlarm?.leave();
   if (!authenticated) { renderLogin(); return; }
   if (accountRole === 'agent') { renderAgentPortal(); return; }
   for (const id of selectedVoucherIds) { if (!state.users.some((user) => user.id === id)) selectedVoucherIds.delete(id); }
@@ -434,9 +441,10 @@ function render() {
         <section class="page-wrap">${syncError ? `<p class="panel" role="alert">${escapeText(syncError)}</p>` : ''}${selectedTown !== 'all' && hasLoadedState && !financeAvailable ? '<p class="panel" role="status">Your backend needs the finance update. Available vouchers and plans are shown; revenue and voucher deletion are unavailable until it is updated.</p>' : ''}${hasLoadedState || activeView === 'notes' || activeView === 'settings' || activeView === 'terminal' || activeView === 'network' || activeView === 'backup' ? renderView({ activeUsers, waitingUsers, revenue, expiring }) : '<section class="panel"><h2>Loading your records</h2><p>No data has loaded yet. A connection error does not mean your records were deleted.</p><button class="secondary-button" data-action="sync">Retry</button></section>'}</section>
       </main>
     </div>
-    ${renderModal()}`;
+    ${renderModal()}${renderCustomerDetails(customerDetails, { escapeText, formatDate, formatDataUsage, money, status: voucherDisplayStatus })}`;
   createIcons({ icons: { LayoutDashboard, Users, Tags, Settings, Search, Plus, Download, Upload, MoreHorizontal, Clock3, Database, Wifi, CheckCircle2, AlertTriangle, Trash2, Pencil, X, Save, CalendarDays, Smartphone, ChevronDown, Terminal } });
   bindEvents();
+  bindCustomerDetails();
   bindTroubleshootingNotes({ workspace: state.settings.apiUrl, account: accountEmail, openTerminal(command) {
     if (selectedTown === 'all') { alert('Select a town first to open its router Terminal.'); return; }
     if (terminalBusy) { alert('Wait for the current terminal command to finish.'); return; }
@@ -819,6 +827,8 @@ function bindOperations() {
 function renderNetwork() {
   if (selectedTown === 'all') return '<section class="panel"><h1>EA-SOFT WIFI NETWORK</h1><p>Select a town to monitor its management VLAN.</p></section>';
   const d = networkData;
+  networkAlarm ||= createNetworkAlarm();
+  networkAlarm.update(d, { active: authenticated && activeView === 'network', town: selectedTown });
   const text = value => escapeText(String(value ?? 'Unknown'));
   const status = value => `<span class="network-status ${value === 'online' ? 'online' : value === 'no-reply' ? 'no-reply' : ''}">${value === 'online' ? '🟢 ONLINE' : value === 'no-reply' ? '🔴 NO REPLY' : '⚪ UNKNOWN'}</span>`;
   const rate = value => value == null ? 'Unavailable' : `${Number(value).toFixed(1)} Mbps`;
@@ -827,6 +837,7 @@ function renderNetwork() {
   return `<div class="heading-row"><div><p class="eyebrow">MANAGEMENT VLAN · 192.168.10.0/24</p><h1>EA-SOFT WIFI NETWORK</h1><p>All 254 host addresses are checked through your MikroTik. Previously discovered devices remain visible.</p></div><button id="network-refresh" class="secondary-button" ${networkBusy || d?.scanning ? 'disabled' : ''}>${d?.scanning ? `Scanning ${d.progress}/254…` : 'Refresh network'}</button></div>
     ${networkError || d?.error ? `<p class="panel" role="alert">${text(networkError || d.error)}</p>` : ''}
     <p role="status">${d?.checkedAt ? `Last finished check: ${text(formatDate(d.checkedAt))}.` : 'No finished check yet.'} ${d?.scanning ? 'A scan is running; previous results stay visible until each device is checked again.' : 'A new scan starts one minute after the previous check finishes while this page is open.'} ${d?.checkedAt && Date.now() - d.checkedAt > 120000 ? 'Readings are stale.' : ''}</p>
+    ${renderNetworkAlarm(networkAlarm, escapeText)}
     <section class="panel network-summary"><div>Internet ${status(d?.health.internet)}<small>${text(d?.health.internetMessage || 'Internet has not been checked yet.')}</small>${d?.health.internetCheckedAt ? `<small>Checked ${text(formatDate(d.health.internetCheckedAt))}</small>` : ''}<button id="network-internet-check" class="secondary-button" ${networkBusy || d?.health.internetChecking ? 'disabled' : ''}>Check Internet</button></div><div>MikroTik ${status(d?.health.router)}</div><div>Download <strong>${rate(d?.health.downloadMbps)}</strong></div><div>Upload <strong>${rate(d?.health.uploadMbps)}</strong></div><div>Hotspot active users <strong>${text(d?.health.activeUsers)}</strong></div></section>
     <section class="panel"><h2>Manage stations</h2><p>Create your main station and substations here, then use Assign station / edit on each device to place it in a station.</p>${!stations.length ? '<p>No stations created yet. Your discovered devices are listed under Other.</p>' : ''}
     <form id="network-station-form" class="network-device-form"><input name="previousName" type="hidden" value="" /><label>Station name<input name="name" required maxlength="80" placeholder="Main station or Substation 1" /></label><label>Station type<select name="type"><option value="main">Main station</option><option value="substation">Substation</option></select></label><button id="network-station-save" class="primary-button" ${networkBusy ? 'disabled' : ''}>Create station</button><button id="network-station-cancel" type="button" class="secondary-button" hidden>Cancel edit</button></form></section>
@@ -861,6 +872,9 @@ async function refreshNetwork(path = '/api/admin/network/scan', options = { meth
 
 function bindNetwork() {
   if (activeView !== 'network' || selectedTown === 'all') return;
+  document.querySelector('#network-alarm-enable')?.addEventListener('click', async () => { await networkAlarm.enable(); render(); });
+  document.querySelector('#network-alarm-disable')?.addEventListener('click', () => { networkAlarm.disable(); render(); });
+  document.querySelector('#network-alarm-silence')?.addEventListener('click', () => { networkAlarm.silence(); render(); });
   document.querySelector('#network-other-status')?.addEventListener('change', event => {
     networkOtherStatus = event.target.value;
     render();
@@ -1156,7 +1170,7 @@ function renderUsers() {
 }
 function userTable(users, full = false) {
   if (!users.length) return '<div class="empty-state">No voucher records match this view.</div>';
-  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Data consumed</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><strong>${user.username}</strong><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td>${dataUsageCell(user)}<td>${money(user.amount)}</td><td>${!user.expiresAt && (user.activatedAt || user.hasLoggedIn || Number(user.dataConsumedBytes) > 0) ? 'Expiry unavailable' : formatDate(user.expiresAt)}</td><td>${voucherStatusBadge(user)}</td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-scroll"><table><thead><tr>${full ? '<th><input type="checkbox" id="select-all-vouchers" aria-label="Select all visible vouchers" ' + (users.every((user) => selectedVoucherIds.has(user.id)) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></th>' : ''}<th>Customer</th><th>Plan</th><th>Data consumed</th><th>Amount</th><th>Expiry</th><th>Status</th><th></th></tr></thead><tbody>${users.map((user) => `<tr>${full ? '<td><input type="checkbox" data-select-voucher="' + user.id + '" aria-label="Select ' + user.username + '" ' + (selectedVoucherIds.has(user.id) ? 'checked' : '') + (bulkDeleting ? ' disabled' : '') + '></td>' : ''}<td><div class="user-cell"><span class="user-badge">${user.username.slice(-2)}</span><div><button class="text-button customer-details-link" data-customer-details="${escapeText(user.id)}" aria-label="View details for ${escapeText(user.username)}">${escapeText(user.username)}</button><small>${user.phone || 'No phone saved'} · ${user.password}</small></div></div></td><td>${getPlan(user.planId)?.name || 'Custom'}<small class="table-note">${user.dataLimit} GB</small></td>${dataUsageCell(user)}<td>${money(user.amount)}</td><td>${!user.expiresAt && (user.activatedAt || user.hasLoggedIn || Number(user.dataConsumedBytes) > 0) ? 'Expiry unavailable' : formatDate(user.expiresAt)}</td><td>${voucherStatusBadge(user)}</td><td><div class="row-actions"><button class="icon-button small" data-action="edit-user" data-id="${user.id}" title="Edit voucher">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-user" data-id="${user.id}" title="Delete voucher">${icon('Trash2', 16)}</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function planMini(plan) { return `<div class="mini-plan"><span class="plan-color ${plan.color}"></span><div><strong>${plan.name}</strong><small>${plan.dataLimit} GB · ${plan.duration} ${plan.period}</small></div><b>${money(plan.price)}</b></div>`; }
 function renderPlans() { return `<div class="heading-row"><div><p class="eyebrow">PRODUCT CATALOG</p><h1>Plans & pricing</h1><p class="subhead">Change price, data limit, and time limit without touching the hotspot portal.</p></div><button class="primary-button" data-action="new-plan">${icon('Plus')} Add plan</button></div><div class="plan-grid">${state.plans.map((plan) => `<article class="plan-card ${plan.color}"><div class="plan-card-top"><span class="plan-color"></span><div class="row-actions"><button class="icon-button small" data-action="edit-plan" data-id="${plan.id}" title="Edit plan">${icon('Pencil', 16)}</button><button class="icon-button small" data-action="delete-plan" data-id="${plan.id}" title="Delete plan">${icon('Trash2', 16)}</button></div></div><h2>${plan.name}</h2><p class="plan-price">${money(plan.price)}</p><div class="plan-meta"><span>${icon('Database', 15)} ${plan.dataLimit} GB</span><span>${icon('Clock3', 15)} ${plan.duration} ${plan.period}</span><span>Shared: ${plan.sharedUsers || 1}</span><span>${plan.rateLimit || 'No rate limit'}</span></div></article>`).join('')}</div>`; }
@@ -1257,6 +1271,71 @@ async function saveAccount(event) {
   } catch (error) { message.textContent = error.message; }
   finally { button.disabled = false; }
 }
+function bindCustomerDetails() {
+  document.querySelectorAll('[data-customer-details]').forEach(button => button.addEventListener('click', () => openCustomerDetails(button.dataset.customerDetails)));
+  document.querySelector('[data-close-customer]')?.addEventListener('click', closeCustomerDetails);
+  document.querySelector('[data-refresh-customer]')?.addEventListener('click', () => openCustomerDetails(customerDetails?.user.id));
+  const apForm = document.querySelector('[data-customer-ap]');
+  apForm?.elements.name.addEventListener('change', () => {
+    const ap = customerDetails?.data?.connections?.accessPoints?.find(ap => ap.name === apForm.elements.name.value);
+    if (ap) for (const field of ['interface', 'address', 'model']) apForm.elements[field].value = ap[field] || '';
+  });
+  document.querySelectorAll('[data-customer-device], [data-customer-ap]').forEach(form => form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const detail = customerDetails, generation = authGeneration, town = selectedTown;
+    if (!detail || detail.saving) return;
+    const button = form.querySelector('button'), message = form.querySelector('[data-customer-save-status]');
+    const body = Object.fromEntries(new FormData(form));
+    body.action = form.hasAttribute('data-customer-ap') ? 'access-point' : 'device';
+    detail.saving = true;
+    button.disabled = true;
+    message.textContent = 'Saving...';
+    try {
+      await apiRequest(`/api/admin/vouchers/${encodeURIComponent(detail.user.id)}/details`, { method: 'PUT', body: JSON.stringify(body) });
+      if (authenticated && generation === authGeneration && town === selectedTown && customerDetails === detail) {
+        message.textContent = 'Saved.';
+        await openCustomerDetails(detail.user.id);
+      }
+    } catch (error) { message.textContent = error.message; }
+    finally { detail.saving = false; button.disabled = false; }
+  }));
+}
+function closeCustomerDetails() {
+  const id = customerDetails?.user.id;
+  customerDetails = null;
+  render();
+  Array.from(document.querySelectorAll('[data-customer-details]')).find(button => button.dataset.customerDetails === id)?.focus();
+}
+document.addEventListener('keydown', event => {
+  if (!customerDetails) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeCustomerDetails(); return; }
+  if (event.key !== 'Tab') return;
+  const controls = Array.from(document.querySelectorAll('.customer-details button:not(:disabled), .customer-details input, .customer-details select, .customer-details summary')).filter(control => control.getClientRects().length);
+  const first = controls[0], last = controls.at(-1);
+  if (event.shiftKey && (document.activeElement === first || document.activeElement?.matches('.customer-details'))) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+});
+async function openCustomerDetails(id) {
+  if (!authenticated || bulkCreating || bulkDeleting || editingUser || editingPlan) return;
+  const user = state.users.find(user => user.id === id);
+  if (!user) return;
+  const town = selectedTown, generation = authGeneration;
+  const detail = { user: { ...user }, plan: getPlan(user.planId)?.name || 'Custom', loading: true, error: '', data: null };
+  customerDetails = detail;
+  render();
+  document.querySelector('[data-close-customer]')?.focus();
+  try {
+    if (!hasRemoteApi()) throw Error('Connect to the backend to read live device details.');
+    detail.data = await apiRequest(`/api/admin/vouchers/${encodeURIComponent(id)}/details`);
+  } catch (error) { detail.error = error.message; }
+  finally {
+    detail.loading = false;
+    if (authenticated && generation === authGeneration && town === selectedTown && customerDetails === detail) {
+      render();
+      document.querySelector('[data-close-customer]')?.focus();
+    }
+  }
+}
 function renderModal() {
   if (editingUser?.bulk) {
     return `<div class="modal-backdrop"><form class="modal" id="bulk-user-form"><button type="button" class="close-button" data-action="close-modal">${icon('X')}</button><p class="eyebrow">BULK VOUCHERS</p><h2>Create bulk vouchers</h2><label>Plan / package<select name="planId" required>${state.plans.map((plan) => `<option value="${plan.id}">${plan.name} · ${plan.dataLimit} GB · ${plan.duration} ${plan.period} · ${money(plan.price)}</option>`).join('')}</select></label><div class="form-row"><label>Quantity<input name="quantity" type="number" min="1" max="100" step="1" value="10" required /></label><label>Amount paid per voucher<input name="amount" type="number" min="0" step="0.01" value="0" required /></label></div><label>Mobile number (optional)<input name="phone" /></label><p>Leave amount paid at zero for future sales. Connected vouchers start validity on first login.</p><label><span><input name="download" type="checkbox" checked /> Download credentials as CSV</span></label><p id="bulk-progress" role="status" aria-live="polite"></p><button class="primary-button full-button" type="submit" ${state.plans.length ? '' : 'disabled'}>${icon('Save')} Create vouchers</button></form></div>`;
@@ -1315,7 +1394,7 @@ function renderAllTowns() {
     <div class="plan-grid">${townSummaries.map((town) => `<article class="panel"><h2>${escapeText(town.name)}</h2><p>${town.available ? `${town.vouchers} vouchers · ${town.active} active` : 'Records unavailable'}</p><p>${town.available ? money(town.revenue) : 'Revenue unavailable'}</p><button class="primary-button" data-town="${escapeText(town.id)}">Open town</button></article>`).join('')}</div>`;
 }
 async function switchTown(id) {
-  if (id === selectedTown || pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan) return;
+  if (id === selectedTown || customerDetails || pendingRequests || bulkCreating || bulkDeleting || terminalBusy || editingUser || editingPlan) return;
   if (id !== 'all' && !towns.some((town) => town.id === id)) return;
   selectedTown = id;
   networkOtherStatus = 'all';
@@ -1468,7 +1547,7 @@ async function deleteSelectedVouchers() {
 }
 let statusRefreshRunning = false;
 async function refreshVoucherStatus() {
-  if (!authenticated || backupBusy || pendingRequests || agentBusy || statusRefreshRunning || bulkDeleting || document.hidden || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
+  if (!authenticated || backupBusy || pendingRequests || agentBusy || statusRefreshRunning || bulkDeleting || document.hidden || customerDetails || editingUser || editingPlan || document.activeElement?.matches('input, select, textarea')) return;
   statusRefreshRunning = true;
   try {
     if (hasRemoteApi()) await syncRemoteState();
